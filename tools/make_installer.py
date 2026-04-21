@@ -169,7 +169,8 @@ Write-OK "Native Messaging registered (Chrome + Edge)"
 # 8. Extension force-install via GPO registry
 # ---------------------------------------------------------------------------
 Write-Step "Force-installing browser extension"
-$extEntry  = "${{ExtensionId}};file:///${{InstallDir.Replace('\','/')}}/extension.crx"
+$InstallDirFwd = $InstallDir.Replace('\', '/')
+$extEntry  = "$ExtensionId;file:///$InstallDirFwd/extension.crx"
 $chromePol = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 $edgePol   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 foreach ($pol in @($chromePol, $edgePol)) {{
