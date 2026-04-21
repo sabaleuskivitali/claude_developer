@@ -8,21 +8,14 @@ using WinDiagSvc.Management;
 using WinDiagSvc.Browser;
 
 // -----------------------------------------------------------------------
-// Native Messaging Host mode — launched by Chrome/Edge as subprocess
-// stdin is redirected (pipe). Run ONLY BrowserMessageHost, skip everything
-// else (ETW, WMI, EventLog, ScreenshotWorker, etc.) to avoid crashes.
+// Native Messaging Host mode — launched by Chrome/Edge as subprocess.
+// Detection: stdin is a pipe (FILE_TYPE_PIPE) not a console or null.
+// Run a minimal raw loop — NO DI, NO SQLite, NO ETW/WMI.
+// Messages are appended to a JSONL queue file; the main service imports them.
 // -----------------------------------------------------------------------
-if (Console.IsInputRedirected)
+if (NativeMessagingDetector.IsNativeMessagingHost())
 {
-    var nmBuilder = Host.CreateApplicationBuilder(args);
-    nmBuilder.Services.Configure<AgentSettings>(
-        nmBuilder.Configuration.GetSection("AgentSettings"));
-    nmBuilder.Services.AddSingleton<EventStore>();
-    nmBuilder.Services.AddSingleton<NtpSynchronizer>();
-    nmBuilder.Services.AddHostedService(sp => sp.GetRequiredService<NtpSynchronizer>());
-    nmBuilder.Services.AddHostedService<BrowserMessageHost>();
-    nmBuilder.Logging.ClearProviders(); // no output — stdout is the messaging channel
-    await nmBuilder.Build().RunAsync();
+    await NativeMessagingDetector.RunAsync();
     return;
 }
 
@@ -56,8 +49,9 @@ builder.Services.AddHostedService<FileEventCapture>();
 // Layer D — app log scanner
 builder.Services.AddHostedService<AppLogScannerHost>();
 
-// Layer E — browser native messaging + localhost CRX host (non-domain machines)
-builder.Services.AddHostedService<BrowserMessageHost>();
+// Layer E — browser events via file queue (native host writes JSONL, importer reads)
+builder.Services.AddHostedService<BrowserQueueImporter>();
+// Localhost CRX host — serves extension.crx for non-domain machines
 builder.Services.AddHostedService<ExtensionHostService>();
 
 // Sync and management
