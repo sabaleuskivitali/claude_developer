@@ -4,6 +4,10 @@ make_installer.py — Generate the PowerShell installer script.
 The installer is a small PS1 that reads companion files from $PSScriptRoot.
 All binaries are uploaded alongside it as separate files in the artifact zip.
 
+Agent runs as a Scheduled Task (AtLogOn, Interactive) so it has full access
+to the user's desktop session for screenshots and UIAutomation.
+NSSM / Windows Service is no longer used.
+
 Usage:
     python tools/make_installer.py \
         --version  1.0.42 \
@@ -26,29 +30,28 @@ INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -SharePath "\\server\diag" -ShareUser "DOM\svc" -SharePass "P@ss"
 
 param(
-    [string]$SharePath    = "\\server\diag",
-    [string]$ShareUser    = "",
-    [string]$SharePass    = "",
-    [string]$ServiceUser  = "",   # e.g. ".\sabal" or "DOMAIN\user" — runs as this user for desktop access
-    [string]$ServicePass  = ""    # password for ServiceUser (required if ServiceUser is set)
+    [string]$SharePath  = "\\server\diag",
+    [string]$ShareUser  = "",
+    [string]$SharePass  = ""
 )
 
 $ErrorActionPreference = "Stop"
-$Version      = "{VERSION}"
-$ServiceName  = "WinDiagSvc"
-$DisplayName  = "Windows Diagnostics Service"
-$InstallDir   = "C:\Program Files\Windows Diagnostics"
-$DataDir      = "$env:ProgramData\Microsoft\Diagnostics"
-$ExtensionId  = "{EXTENSION_ID}"
-$SrcDir       = $PSScriptRoot
+$Version     = "{VERSION}"
+$TaskName    = "WinDiagSvc"
+$InstallDir  = "C:\Program Files\Windows Diagnostics"
+$DataDir     = "$env:ProgramData\Microsoft\Diagnostics"
+$ExtensionId = "{EXTENSION_ID}"
+$SrcDir      = $PSScriptRoot
 
 function Write-Step {{ param($M) Write-Host "`n==> $M" -ForegroundColor Cyan }}
 function Write-OK   {{ param($M) Write-Host "    OK: $M" -ForegroundColor Green }}
 function Write-Warn {{ param($M) Write-Host "    WARN: $M" -ForegroundColor Yellow }}
 
-# Verify companion files are present
+# ---------------------------------------------------------------------------
+# 0. Verify companion files are present
+# ---------------------------------------------------------------------------
 Write-Step "Verifying installer files"
-$required = @("WinDiagSvc.exe","nssm.exe","extension.crx","native-messaging-host.json","appsettings.json","WinDiagUpdater.ps1")
+$required = @("WinDiagSvc.exe","extension.crx","native-messaging-host.json","appsettings.json","WinDiagUpdater.ps1")
 foreach ($f in $required) {{
     if (-not (Test-Path "$SrcDir\$f")) {{
         Write-Error "Missing required file: $SrcDir\$f"
@@ -99,55 +102,57 @@ try {{
 }}
 
 # ---------------------------------------------------------------------------
-# 5. SMB share
+# 5. SMB share credentials (optional)
 # ---------------------------------------------------------------------------
 if ($ShareUser -and $SharePass) {{
     Write-Step "Mapping SMB share with credentials"
-    net use $SharePath /user:$ShareUser $SharePass /persistent:yes 2>$null
+    $prev = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
+    net use $SharePath /user:$ShareUser $SharePass /persistent:yes 2>&1 | Out-Null
+    $ErrorActionPreference = $prev
     Write-OK "SMB mapped: $SharePath"
 }} else {{
     Write-Step "SMB: using Windows Integrated Auth"
-    Write-OK "No credentials needed (domain environment)"
+    Write-OK "No credentials provided (domain environment assumed)"
 }}
 
 # ---------------------------------------------------------------------------
-# 6. Windows Service via NSSM
+# 6. Scheduled Task (AtLogOn, Interactive — full desktop access)
 # ---------------------------------------------------------------------------
-Write-Step "Installing Windows Service: $ServiceName"
-$nssm = "$InstallDir\nssm.exe"
-$exe  = "$InstallDir\WinDiagSvc.exe"
+Write-Step "Registering Scheduled Task: $TaskName"
+$exe = "$InstallDir\WinDiagSvc.exe"
 
-# stop/remove may fail if service doesn't exist yet — suppress errors
+# Remove existing task if present
 $prev = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
-& $nssm stop    $ServiceName 2>&1 | Out-Null
-& $nssm remove  $ServiceName confirm 2>&1 | Out-Null
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false 2>&1 | Out-Null
 $ErrorActionPreference = $prev
 
-& $nssm install $ServiceName $exe
-& $nssm set     $ServiceName AppDirectory    $InstallDir
-& $nssm set     $ServiceName Start           SERVICE_AUTO_START
-& $nssm set     $ServiceName AppPriority     BELOW_NORMAL_PRIORITY_CLASS
-& $nssm set     $ServiceName DisplayName     $DisplayName
-& $nssm set     $ServiceName Description     "Windows Diagnostics Service"
-& $nssm set     $ServiceName AppNoConsole    1
+$action    = New-ScheduledTaskAction -Execute $exe
+$trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings  = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit 0 `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal `
+    -UserId $env:USERNAME `
+    -LogonType Interactive `
+    -RunLevel Highest
 
-# Run as specific user for desktop/screenshot access, or LocalSystem for ETW
-if ($ServiceUser -and $ServicePass) {{
-    & $nssm set $ServiceName ObjectName $ServiceUser $ServicePass
-    Write-OK "Service account: $ServiceUser"
-}} else {{
-    & $nssm set $ServiceName ObjectName LocalSystem
-    Write-Warn "Running as LocalSystem — screenshots disabled (Session 0 isolation)"
-    Write-Warn "Re-run with: -ServiceUser '.\username' -ServicePass 'password'"
-}}
-Write-OK "Service installed"
+Register-ScheduledTask `
+    -TaskName  $TaskName `
+    -Action    $action `
+    -Trigger   $trigger `
+    -Settings  $settings `
+    -Principal $principal `
+    -Force | Out-Null
+
+Write-OK "Task registered for user: $env:USERNAME"
 
 # ---------------------------------------------------------------------------
 # 7. Native Messaging Host
 # ---------------------------------------------------------------------------
 Write-Step "Registering Native Messaging Host"
 $hostManifest = "$InstallDir\native-messaging-host.json"
-
 $m = Get-Content $hostManifest -Raw | ConvertFrom-Json
 $m.path = $exe
 $m | ConvertTo-Json -Depth 5 | Set-Content $hostManifest -Encoding UTF8
@@ -167,7 +172,6 @@ Write-Step "Force-installing browser extension"
 $extEntry  = "${{ExtensionId}};file:///${{InstallDir.Replace('\','/')}}/extension.crx"
 $chromePol = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 $edgePol   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
-
 foreach ($pol in @($chromePol, $edgePol)) {{
     New-Item -Force -Path $pol | Out-Null
     $existing = (Get-ItemProperty -Path $pol -ErrorAction SilentlyContinue).PSObject.Properties |
@@ -178,24 +182,23 @@ foreach ($pol in @($chromePol, $edgePol)) {{
 Write-OK "Extension force-list updated (ID: $ExtensionId)"
 
 # ---------------------------------------------------------------------------
-# 9. Start service
+# 9. Start agent now (without waiting for next logon)
 # ---------------------------------------------------------------------------
-Write-Step "Starting service"
-Start-Service -Name $ServiceName
+Write-Step "Starting agent"
+Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 3
-$svc = Get-Service -Name $ServiceName
-if ($svc.Status -eq "Running") {{
-    Write-OK "Service is running"
+$state = (Get-ScheduledTask -TaskName $TaskName).State
+if ($state -eq "Running") {{
+    Write-OK "Agent is running"
 }} else {{
-    Write-Warn "Service status: $($svc.Status)"
-    Write-Warn "Check logs: $DataDir\logs\agent-.log"
+    Write-Warn "Task state: $state — check logs at $DataDir\logs"
 }}
 
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host " WinDiagSvc v$Version - installed!"      -ForegroundColor Green
-Write-Host " Service  : $DisplayName ($ServiceName)"
+Write-Host " Task     : $TaskName (AtLogOn)"
 Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
 Write-Host " SMB      : $SharePath"
@@ -205,9 +208,9 @@ Write-Host "========================================" -ForegroundColor Green
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version",  required=True)
-    parser.add_argument("--ext-id",   required=True, help="Extension ID")
-    parser.add_argument("--out",      required=True, help="Output .ps1 path")
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--ext-id",  required=True, help="Extension ID")
+    parser.add_argument("--out",     required=True, help="Output .ps1 path")
     args = parser.parse_args()
 
     script = INSTALLER_TEMPLATE.format(

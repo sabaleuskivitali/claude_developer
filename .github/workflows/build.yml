@@ -181,21 +181,6 @@ jobs:
     # -------------------------------------------------------------------------
     # 11. Download NSSM 2.24
     # -------------------------------------------------------------------------
-    - name: Download NSSM
-      shell: pwsh
-      run: |
-        if (Test-Path installer/nssm.exe) {
-          Write-Host "Using cached nssm.exe from installer/"
-          Copy-Item installer/nssm.exe build/nssm.exe
-        } else {
-          Invoke-WebRequest https://nssm.cc/release/nssm-2.24.zip -OutFile nssm.zip
-          Expand-Archive nssm.zip -DestinationPath nssm-extract
-          Copy-Item nssm-extract/nssm-2.24/win64/nssm.exe build/nssm.exe
-          Remove-Item nssm.zip, nssm-extract -Recurse -Force
-        }
-        Write-Host "nssm.exe ready"
-
-    # -------------------------------------------------------------------------
     # 12. Generate installer script (reads companion files from $PSScriptRoot)
     # -------------------------------------------------------------------------
     - name: Generate installer script
@@ -229,7 +214,6 @@ jobs:
         path: |
           build/Install-WinDiagSvc.ps1
           build/WinDiagSvc.exe
-          build/nssm.exe
           build/extension.crx
           build/native-messaging-host.json
           build/appsettings.json
