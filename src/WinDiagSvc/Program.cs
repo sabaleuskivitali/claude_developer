@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Configuration;
+using NReco.Logging.File;
 using WinDiagSvc.Capture;
 using WinDiagSvc.Capture.AppLogScanner;
 using WinDiagSvc.Models;
@@ -7,7 +7,9 @@ using WinDiagSvc.Sync;
 using WinDiagSvc.Management;
 using WinDiagSvc.Browser;
 
+// UseWindowsService must be on the builder, before Build()
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddWindowsService(o => o.ServiceName = "WinDiagSvc");
 
 builder.Services.Configure<AgentSettings>(
     builder.Configuration.GetSection("AgentSettings"));
@@ -28,7 +30,7 @@ builder.Services.AddHostedService<IdleDetector>();
 builder.Services.AddHostedService<ProcessWatcher>();
 builder.Services.AddHostedService<FileEventCapture>();
 
-// Layer D — app log scanner (sub-services wired internally)
+// Layer D — app log scanner
 builder.Services.AddHostedService<AppLogScannerHost>();
 
 // Layer E — browser native messaging
@@ -41,9 +43,8 @@ builder.Services.AddHostedService<CommandPoller>();
 builder.Services.AddHostedService<UpdateManager>();
 builder.Services.AddHostedService<PerformanceMonitor>();
 
-// File logging only — no console in service mode
+// File logging — no console output in service mode
 builder.Logging.ClearProviders();
-builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
 
 var logDir = builder.Configuration
     .GetSection("AgentSettings")
@@ -51,10 +52,12 @@ var logDir = builder.Configuration
 logDir = Environment.ExpandEnvironmentVariables(logDir);
 Directory.CreateDirectory(logDir);
 
-builder.Logging.AddFile(Path.Combine(logDir, "agent-.log"),
-    fileSizeLimitBytes: 10 * 1024 * 1024,
-    retainedFileCountLimit: 5,
-    rollOnFileSizeLimit: true);
+builder.Logging.AddFile(Path.Combine(logDir, "agent-.log"), o =>
+{
+    o.Append            = true;
+    o.FileSizeLimitBytes = 10 * 1024 * 1024;
+    o.MaxRollingFiles   = 5;
+});
 
 var host = builder.Build();
 
@@ -65,8 +68,6 @@ using (var scope = host.Services.CreateScope())
         .GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentSettings>>().Value;
     EnsureIdentity(settings);
 }
-
-host.UseWindowsService(o => o.ServiceName = "WinDiagSvc");
 
 await host.RunAsync();
 
@@ -81,13 +82,10 @@ static void EnsureIdentity(AgentSettings settings)
     if (!File.Exists(configPath)) return;
 
     var json = File.ReadAllText(configPath);
-    using var doc = System.Text.Json.JsonDocument.Parse(json);
-    var root = doc.RootElement;
 
     var machineId = EventStore.ComputeId(Environment.MachineName);
     var userId    = EventStore.ComputeId(Environment.UserName + Environment.MachineName);
 
-    // Patch the JSON section in-place (simple string replace — no full rewrite needed)
     var patched = json
         .Replace(@"""MachineId"": """"", $@"""MachineId"": ""{machineId}""")
         .Replace(@"""UserId"": """"",    $@"""UserId"": ""{userId}""");
