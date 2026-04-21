@@ -171,20 +171,22 @@ Write-OK "Native Messaging registered (Chrome + Edge)"
 Write-Step "Force-installing browser extension"
 
 # Chrome 90+ requires an XML update manifest instead of direct CRX path
+# Spaces in path must be URL-encoded as %20 for file:/// URLs
 $InstallDirFwd = $InstallDir.Replace('\', '/')
+$InstallDirUrl = $InstallDirFwd.Replace(' ', '%20')
 $manifestPath  = "$InstallDir\update_manifest.xml"
-$manifestFwd   = "$InstallDirFwd/update_manifest.xml"
+$manifestUrl   = "$InstallDirUrl/update_manifest.xml"
 
 @"
 <?xml version='1.0' encoding='UTF-8'?>
 <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
   <app appid='$ExtensionId'>
-    <updatecheck codebase='file:///$InstallDirFwd/extension.crx' version='1.0.0' />
+    <updatecheck codebase='file:///$InstallDirUrl/extension.crx' version='1.0.0' />
   </app>
 </gupdate>
 "@ | Set-Content $manifestPath -Encoding UTF8
 
-$extEntry  = "$ExtensionId;file:///$manifestFwd"
+$extEntry  = "$ExtensionId;file:///$manifestUrl"
 $chromePol = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 $edgePol   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 foreach ($pol in @($chromePol, $edgePol)) {{
