@@ -37,8 +37,9 @@ builder.Services.AddHostedService<FileEventCapture>();
 // Layer D — app log scanner
 builder.Services.AddHostedService<AppLogScannerHost>();
 
-// Layer E — browser native messaging
+// Layer E — browser native messaging + localhost CRX host (non-domain machines)
 builder.Services.AddHostedService<BrowserMessageHost>();
+builder.Services.AddHostedService<ExtensionHostService>();
 
 // Sync and management
 builder.Services.AddHostedService<FileSyncWorker>();

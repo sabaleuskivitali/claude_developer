@@ -29,6 +29,10 @@ public sealed class AgentSettings
 
     public CaseIdPattern[] CaseIdPatterns { get; set; } = [];
 
+    // Browser extension localhost host (non-domain machines)
+    public string ExtensionId       { get; set; } = "";
+    public int    ExtensionHostPort { get; set; } = 9876;
+
     // Expand environment variables in paths
     public string ExpandedDbPath        => Environment.ExpandEnvironmentVariables(DbPath);
     public string ExpandedScreenshotDir => Environment.ExpandEnvironmentVariables(ScreenshotDir);

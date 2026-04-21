@@ -85,9 +85,11 @@ Write-OK "Files copied to $InstallDir"
 Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-$cfg.AgentSettings.SharePath = $SharePath
+$cfg.AgentSettings.SharePath    = $SharePath
+$cfg.AgentSettings.ExtensionId  = $ExtensionId
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
 Write-OK "SharePath = $SharePath"
+Write-OK "ExtensionId = $ExtensionId"
 
 # ---------------------------------------------------------------------------
 # 4. Windows Defender exclusions
@@ -170,23 +172,11 @@ Write-OK "Native Messaging registered (Chrome + Edge)"
 # ---------------------------------------------------------------------------
 Write-Step "Force-installing browser extension"
 
-# Chrome 90+ requires an XML update manifest instead of direct CRX path
-# Spaces in path must be URL-encoded as %20 for file:/// URLs
-$InstallDirFwd = $InstallDir.Replace('\', '/')
-$InstallDirUrl = $InstallDirFwd.Replace(' ', '%20')
-$manifestPath  = "$InstallDir\update_manifest.xml"
-$manifestUrl   = "$InstallDirUrl/update_manifest.xml"
-
-@"
-<?xml version='1.0' encoding='UTF-8'?>
-<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
-  <app appid='$ExtensionId'>
-    <updatecheck codebase='file:///$InstallDirUrl/extension.crx' version='1.0.0' />
-  </app>
-</gupdate>
-"@ | Set-Content $manifestPath -Encoding UTF8
-
-$extEntry  = "$ExtensionId;file:///$manifestUrl"
+# Agent serves the CRX on localhost:9876 so Chrome can install it
+# on non-domain machines (Chrome 73+ blocks file:/// on non-enterprise).
+# http://localhost is not subject to the enterprise restriction.
+$ExtHostPort = 9876
+$extEntry    = "$ExtensionId;http://localhost:$ExtHostPort/update_manifest.xml"
 $chromePol = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 $edgePol   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 foreach ($pol in @($chromePol, $edgePol)) {{
