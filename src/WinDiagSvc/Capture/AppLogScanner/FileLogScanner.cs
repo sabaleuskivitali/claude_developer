@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.Extensions.Logging;
 using WinDiagSvc.Models;
 using WinDiagSvc.Storage;

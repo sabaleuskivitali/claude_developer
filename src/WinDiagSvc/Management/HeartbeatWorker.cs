@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using WinDiagSvc.Capture;
 using WinDiagSvc.Models;
 using WinDiagSvc.Storage;
 
@@ -15,8 +16,14 @@ public sealed class HeartbeatWorker : BackgroundService
     private readonly NtpSynchronizer _ntp;
     private readonly AgentSettings _settings;
 
-    // Tracked by FileSyncWorker notification — simple volatile field is fine
-    public static volatile long LastSyncCompletedMs;
+    // Tracked by FileSyncWorker after each sync cycle.
+    // Use Interlocked because volatile is not valid for 64-bit fields in C#.
+    private static long _lastSyncCompletedMs;
+    public static long LastSyncCompletedMs
+    {
+        get => Interlocked.Read(ref _lastSyncCompletedMs);
+        set => Interlocked.Exchange(ref _lastSyncCompletedMs, value);
+    }
 
     public HeartbeatWorker(
         EventStore store,

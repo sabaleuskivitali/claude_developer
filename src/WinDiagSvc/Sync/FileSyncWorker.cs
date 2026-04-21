@@ -2,6 +2,8 @@ using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WinDiagSvc.Capture;
+using WinDiagSvc.Management;
 using WinDiagSvc.Models;
 using WinDiagSvc.Storage;
 
@@ -101,6 +103,7 @@ public sealed class FileSyncWorker : BackgroundService
             MarkFailed();
         }
 
+        HeartbeatWorker.LastSyncCompletedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         WriteEvent(nameof(EventType.SyncCompleted), sentCount, failedCount);
     }
 
