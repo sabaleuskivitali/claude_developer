@@ -112,20 +112,24 @@ public sealed class ScreenshotWorker : BackgroundService
         var h = rect.Bottom - rect.Top;
         if (w <= 0 || h <= 0) return null;
 
-        var hdc    = GetDC(hwnd);
-        var memDc  = CreateCompatibleDC(hdc);
-        var hBmp   = CreateCompatibleBitmap(hdc, w, h);
-        var oldBmp = SelectObject(memDc, hBmp);
+        // Use desktop DC (GetDC(0)) so GPU-composited windows (Chrome, Edge, etc.)
+        // are captured from the screen surface rather than the window's own DC
+        // which may be blank for hardware-accelerated renderers.
+        var desktopDc = GetDC(nint.Zero);
+        var memDc     = CreateCompatibleDC(desktopDc);
+        var hBmp      = CreateCompatibleBitmap(desktopDc, w, h);
+        var oldBmp    = SelectObject(memDc, hBmp);
 
         try
         {
-            BitBlt(memDc, 0, 0, w, h, hdc, 0, 0, SRCCOPY);
+            // BitBlt from desktop at window's screen coordinates
+            BitBlt(memDc, 0, 0, w, h, desktopDc, rect.Left, rect.Top, SRCCOPY);
 
             var bmpInfo = new BITMAPINFOHEADER
             {
                 biSize        = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
-                biWidth       = (uint)w,   // biWidth is uint; w is int
-                biHeight      = -h,       // top-down DIB (negative height)
+                biWidth       = (uint)w,
+                biHeight      = -h,       // top-down DIB
                 biPlanes      = 1,
                 biBitCount    = 32,
                 biCompression = BI_RGB,
@@ -147,7 +151,7 @@ public sealed class ScreenshotWorker : BackgroundService
             SelectObject(memDc, oldBmp);
             DeleteObject(hBmp);
             DeleteDC(memDc);
-            ReleaseDC(hwnd, hdc);
+            ReleaseDC(nint.Zero, desktopDc);
         }
     }
 
