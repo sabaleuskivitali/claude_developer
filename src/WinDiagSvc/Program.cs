@@ -7,6 +7,25 @@ using WinDiagSvc.Sync;
 using WinDiagSvc.Management;
 using WinDiagSvc.Browser;
 
+// -----------------------------------------------------------------------
+// Native Messaging Host mode — launched by Chrome/Edge as subprocess
+// stdin is redirected (pipe). Run ONLY BrowserMessageHost, skip everything
+// else (ETW, WMI, EventLog, ScreenshotWorker, etc.) to avoid crashes.
+// -----------------------------------------------------------------------
+if (Console.IsInputRedirected)
+{
+    var nmBuilder = Host.CreateApplicationBuilder(args);
+    nmBuilder.Services.Configure<AgentSettings>(
+        nmBuilder.Configuration.GetSection("AgentSettings"));
+    nmBuilder.Services.AddSingleton<EventStore>();
+    nmBuilder.Services.AddSingleton<NtpSynchronizer>();
+    nmBuilder.Services.AddHostedService(sp => sp.GetRequiredService<NtpSynchronizer>());
+    nmBuilder.Services.AddHostedService<BrowserMessageHost>();
+    nmBuilder.Logging.ClearProviders(); // no output — stdout is the messaging channel
+    await nmBuilder.Build().RunAsync();
+    return;
+}
+
 // UseWindowsService must be on the builder, before Build()
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(o => o.ServiceName = "WinDiagSvc");
