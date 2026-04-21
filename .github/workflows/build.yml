@@ -90,14 +90,24 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path build | Out-Null
-        dotnet publish src/WinDiagSvc/WinDiagSvc.csproj `
+        $output = dotnet publish src/WinDiagSvc/WinDiagSvc.csproj `
           -c Release `
           -r win-x64 `
           --self-contained true `
           --no-restore `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
-          -o build/agent
+          -o build/agent 2>&1
+        $output | Write-Host
+        if ($LASTEXITCODE -ne 0) {
+          @"
+        ## Build Errors (dotnet publish)
+        ``````
+        $($output -join "`n")
+        ``````
+        "@ | Add-Content $env:GITHUB_STEP_SUMMARY
+          exit 1
+        }
         Copy-Item build/agent/WinDiagSvc.exe build/WinDiagSvc.exe
         $size = (Get-Item build/WinDiagSvc.exe).Length / 1MB
         Write-Host "WinDiagSvc.exe: $([math]::Round($size, 1)) MB"
