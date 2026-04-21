@@ -147,14 +147,20 @@ jobs:
     - name: Pack Chrome extension (CRX3)
       shell: pwsh
       run: |
+        # Copy unpacked extension first so we can patch its manifest.json with the key
+        Copy-Item browser-extension build/extension -Recurse -Force
+
         python tools/pack_extension.py `
-          --key    tools/extension.pem `
-          --src    browser-extension `
-          --output build/extension.crx `
-          --id-out build/extension-id.txt
+          --key             tools/extension.pem `
+          --src             browser-extension `
+          --output          build/extension.crx `
+          --id-out          build/extension-id.txt `
+          --patch-manifest  build/extension/manifest.json
+
         $id = Get-Content build/extension-id.txt
         echo "EXTENSION_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
         Write-Host "Extension ID: $id"
+        Write-Host "Unpacked manifest.json patched with public key (same ID as CRX)"
 
     # -------------------------------------------------------------------------
     # 9. Patch extension ID into native-messaging-host.json
@@ -196,12 +202,7 @@ jobs:
       shell: pwsh
       run: Copy-Item installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
 
-    # Copy unpacked browser extension — for non-domain machines (Load unpacked)
-    - name: Copy unpacked extension
-      shell: pwsh
-      run: |
-        Copy-Item browser-extension build/extension -Recurse -Force
-        Write-Host "Unpacked extension copied to build/extension/"
+    # Note: unpacked extension already copied + manifest key patched in "Pack Chrome extension" step
 
     # -------------------------------------------------------------------------
     # 13. Wipe private key from runner

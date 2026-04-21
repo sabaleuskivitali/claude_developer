@@ -127,20 +127,45 @@ def pack_crx3(src_dir: str, key_path: str, output_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    import base64, json
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--key",    required=True,  help="Path to PEM private key")
-    parser.add_argument("--src",    required=True,  help="Extension source directory")
-    parser.add_argument("--output", required=True,  help="Output .crx path")
-    parser.add_argument("--id-out", required=False, help="Write extension ID to this file")
+    parser.add_argument("--key",       required=True,  help="Path to PEM private key")
+    parser.add_argument("--src",       required=True,  help="Extension source directory")
+    parser.add_argument("--output",    required=True,  help="Output .crx path")
+    parser.add_argument("--id-out",    required=False, help="Write extension ID to this file")
+    parser.add_argument("--pubkey-out",required=False, help="Write base64 public key to this file")
+    parser.add_argument("--patch-manifest", required=False,
+                        help="Patch 'key' field into this manifest.json (for unpacked ext same ID)")
     args = parser.parse_args()
 
     ext_id = pack_crx3(args.src, args.key, args.output)
     print(f"Extension ID : {ext_id}")
     print(f"CRX written  : {args.output}  ({Path(args.output).stat().st_size:,} bytes)")
 
+    # Extract base64 public key (needed for manifest.json "key" field)
+    key_bytes   = Path(args.key).read_bytes()
+    private_key = serialization.load_pem_private_key(key_bytes, password=None)
+    pub_der     = private_key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    pub_b64 = base64.b64encode(pub_der).decode("ascii")
+
     if args.id_out:
         Path(args.id_out).write_text(ext_id + "\n")
         print(f"ID saved     : {args.id_out}")
+
+    if args.pubkey_out:
+        Path(args.pubkey_out).write_text(pub_b64 + "\n")
+        print(f"Pubkey saved : {args.pubkey_out}")
+
+    if args.patch_manifest:
+        mp = Path(args.patch_manifest)
+        manifest = json.loads(mp.read_text(encoding="utf-8"))
+        manifest["key"] = pub_b64
+        mp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Manifest key patched: {args.patch_manifest}")
 
 
 if __name__ == "__main__":
