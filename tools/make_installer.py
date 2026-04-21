@@ -77,6 +77,11 @@ Write-Step "Installing agent files"
 foreach ($f in $required) {{
     Copy-Item "$SrcDir\$f" $InstallDir -Force
 }}
+# Copy unpacked extension folder (for Load unpacked on non-domain machines)
+if (Test-Path "$SrcDir\extension") {{
+    Copy-Item "$SrcDir\extension" "$InstallDir\extension" -Recurse -Force
+    Write-OK "Unpacked extension copied to $InstallDir\extension"
+}}
 Write-OK "Files copied to $InstallDir"
 
 # ---------------------------------------------------------------------------
@@ -210,6 +215,27 @@ Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
 Write-Host " SMB      : $SharePath"
 Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+
+# Check if machine is domain-joined
+$isDomain = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+if ($isDomain) {{
+    Write-Host "Domain machine: extension will install automatically via policy." -ForegroundColor Green
+    Write-Host "Restart Chrome to apply." -ForegroundColor Green
+}} else {{
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host " BROWSER EXTENSION - MANUAL STEP"       -ForegroundColor Yellow
+    Write-Host " (non-domain machine)"                   -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host " 1. Open Chrome"
+    Write-Host " 2. Go to chrome://extensions"
+    Write-Host " 3. Enable Developer mode (top right)"
+    Write-Host " 4. Click 'Load unpacked'"
+    Write-Host " 5. Select folder:"
+    Write-Host "    $InstallDir\extension"               -ForegroundColor Cyan
+    Write-Host " Do this once per user per machine."
+    Write-Host "========================================" -ForegroundColor Yellow
+}}
 '''
 
 

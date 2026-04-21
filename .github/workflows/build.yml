@@ -196,6 +196,13 @@ jobs:
       shell: pwsh
       run: Copy-Item installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
 
+    # Copy unpacked browser extension — for non-domain machines (Load unpacked)
+    - name: Copy unpacked extension
+      shell: pwsh
+      run: |
+        Copy-Item browser-extension build/extension -Recurse -Force
+        Write-Host "Unpacked extension copied to build/extension/"
+
     # -------------------------------------------------------------------------
     # 13. Wipe private key from runner
     # -------------------------------------------------------------------------
@@ -215,6 +222,7 @@ jobs:
           build/Install-WinDiagSvc.ps1
           build/WinDiagSvc.exe
           build/extension.crx
+          build/extension/
           build/native-messaging-host.json
           build/appsettings.json
           build/WinDiagUpdater.ps1
