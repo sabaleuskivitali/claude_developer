@@ -276,7 +276,7 @@ def main():
     out.write_text(script, encoding="utf-8")
 
     total_mb = out.stat().st_size / 1024 / 1024
-    print(f"\n✅ Installer: {out}  ({total_mb:.1f} MB)")
+    print(f"\nOK Installer: {out}  ({total_mb:.1f} MB)")
 
 
 if __name__ == "__main__":
