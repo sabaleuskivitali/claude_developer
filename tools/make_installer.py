@@ -1,41 +1,26 @@
 """
-make_installer.py — Bundle all binaries into a single self-contained PowerShell installer.
+make_installer.py — Generate the PowerShell installer script.
+
+The installer is a small PS1 that reads companion files from $PSScriptRoot.
+All binaries are uploaded alongside it as separate files in the artifact zip.
 
 Usage:
     python tools/make_installer.py \
         --version  1.0.42 \
-        --build    build \
+        --ext-id   cngajkfiaohlbgdippmdgjaknieojjlb \
         --out      build/Install-WinDiagSvc.ps1
-
-Inputs (from build/ directory):
-    WinDiagSvc.exe
-    nssm.exe
-    extension.crx
-    extension-id.txt
-    appsettings.json         (from src/)
-    native-messaging-host.json (patched with real extension ID)
-    WinDiagUpdater.ps1
-
-Output:
-    A single .ps1 that extracts everything and installs the agent.
-    No other files needed on the target machine.
 """
 
 import argparse
-import base64
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-
-ROOT = Path(__file__).parent.parent
 
 
 INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 # WinDiagSvc Installer v{VERSION}
 # Generated: {GENERATED}
-# Single-file: all binaries embedded as base64
 #
-# Usage:
+# Usage (run from the folder containing this script and all companion files):
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -SharePath "\\server\diag"
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -SharePath "\\server\diag" -ShareUser "DOM\svc" -SharePass "P@ss"
@@ -53,30 +38,22 @@ $DisplayName  = "Windows Diagnostics Service"
 $InstallDir   = "C:\Program Files\Windows Diagnostics"
 $DataDir      = "$env:ProgramData\Microsoft\Diagnostics"
 $ExtensionId  = "{EXTENSION_ID}"
+$SrcDir       = $PSScriptRoot
 
 function Write-Step {{ param($M) Write-Host "`n==> $M" -ForegroundColor Cyan }}
 function Write-OK   {{ param($M) Write-Host "    OK: $M" -ForegroundColor Green }}
 function Write-Warn {{ param($M) Write-Host "    WARN: $M" -ForegroundColor Yellow }}
 
-# ---------------------------------------------------------------------------
-# Extract embedded files to temp directory
-# ---------------------------------------------------------------------------
-
-$TempDir = Join-Path $env:TEMP "WinDiagInstall_$(Get-Random)"
-New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-
-Write-Step "Extracting embedded files"
-
-function Expand-Embedded {{
-    param([string]$Name, [string]$B64)
-    $dest = Join-Path $TempDir $Name
-    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String(($B64 -replace '[\r\n]','')))
-    return $dest
+# Verify companion files are present
+Write-Step "Verifying installer files"
+$required = @("WinDiagSvc.exe","nssm.exe","extension.crx","native-messaging-host.json","appsettings.json","WinDiagUpdater.ps1")
+foreach ($f in $required) {{
+    if (-not (Test-Path "$SrcDir\$f")) {{
+        Write-Error "Missing required file: $SrcDir\$f"
+        exit 1
+    }}
 }}
-
-{FILE_EXTRACTIONS}
-
-Write-OK "Files extracted to $TempDir"
+Write-OK "All files present"
 
 # ---------------------------------------------------------------------------
 # 1. Create directories
@@ -92,12 +69,9 @@ Write-OK $InstallDir
 # 2. Copy files
 # ---------------------------------------------------------------------------
 Write-Step "Installing agent files"
-Copy-Item $AgentExe                $InstallDir -Force
-Copy-Item $NssmExe                 $InstallDir -Force
-Copy-Item $ExtensionCrx            $InstallDir -Force
-Copy-Item $NativeHostJson          $InstallDir -Force
-Copy-Item $AppSettingsJson         $InstallDir -Force
-Copy-Item $UpdaterScript           $InstallDir -Force
+foreach ($f in $required) {{
+    Copy-Item "$SrcDir\$f" $InstallDir -Force
+}}
 Write-OK "Files copied to $InstallDir"
 
 # ---------------------------------------------------------------------------
@@ -160,7 +134,6 @@ Write-OK "Service installed"
 Write-Step "Registering Native Messaging Host"
 $hostManifest = "$InstallDir\native-messaging-host.json"
 
-# Update path in manifest to point to installed exe
 $m = Get-Content $hostManifest -Raw | ConvertFrom-Json
 $m.path = $exe
 $m | ConvertTo-Json -Depth 5 | Set-Content $hostManifest -Encoding UTF8
@@ -205,14 +178,9 @@ if ($svc.Status -eq "Running") {{
 }}
 
 # ---------------------------------------------------------------------------
-# Cleanup temp
-# ---------------------------------------------------------------------------
-Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-# ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host " WinDiagSvc v$Version — installed!" -ForegroundColor Green
+Write-Host " WinDiagSvc v$Version - installed!"      -ForegroundColor Green
 Write-Host " Service  : $DisplayName ($ServiceName)"
 Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
@@ -221,63 +189,25 @@ Write-Host "========================================" -ForegroundColor Green
 '''
 
 
-def b64_file(path: Path) -> str:
-    """Read file and return base64 string split into 76-char lines."""
-    raw = base64.b64encode(path.read_bytes()).decode()
-    return "\n".join(raw[i:i+76] for i in range(0, len(raw), 76))
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version",  required=True)
-    parser.add_argument("--build",    required=True, help="Build directory with all binaries")
+    parser.add_argument("--ext-id",   required=True, help="Extension ID")
     parser.add_argument("--out",      required=True, help="Output .ps1 path")
     args = parser.parse_args()
-
-    build = Path(args.build)
-
-    # Read extension ID
-    ext_id = (build / "extension-id.txt").read_text().strip()
-
-    # Files to embed: (variable_name, filename, path)
-    files = [
-        ("AgentExe",       "WinDiagSvc.exe",             build / "WinDiagSvc.exe"),
-        ("NssmExe",        "nssm.exe",                   build / "nssm.exe"),
-        ("ExtensionCrx",   "extension.crx",              build / "extension.crx"),
-        ("NativeHostJson", "native-messaging-host.json",  build / "native-messaging-host.json"),
-        ("AppSettingsJson","appsettings.json",            build / "appsettings.json"),
-        ("UpdaterScript",  "WinDiagUpdater.ps1",         ROOT / "installer" / "WinDiagUpdater.ps1"),
-    ]
-
-    # Verify all files exist
-    for var, fname, path in files:
-        if not path.exists():
-            print(f"ERROR: missing file: {path}")
-            raise SystemExit(1)
-
-    print("Encoding files:")
-    extractions = []
-    for var, fname, path in files:
-        size = path.stat().st_size
-        print(f"  {fname:35s}  {size:>10,} bytes")
-        b64 = b64_file(path)
-        extractions.append(
-            f'$_b64 = @"\n{b64}\n"@\n${var} = Expand-Embedded "{fname}" $_b64'
-        )
 
     script = INSTALLER_TEMPLATE.format(
         VERSION=args.version,
         GENERATED=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        EXTENSION_ID=ext_id,
-        FILE_EXTRACTIONS="\n".join(extractions),
+        EXTENSION_ID=args.ext_id,
     )
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(script, encoding="utf-8")
 
-    total_mb = out.stat().st_size / 1024 / 1024
-    print(f"\nOK Installer: {out}  ({total_mb:.1f} MB)")
+    size_kb = out.stat().st_size / 1024
+    print(f"OK Installer script: {out}  ({size_kb:.1f} KB)")
 
 
 if __name__ == "__main__":

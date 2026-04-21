@@ -196,17 +196,20 @@ jobs:
         Write-Host "nssm.exe ready"
 
     # -------------------------------------------------------------------------
-    # 12. Bundle everything into single Install-WinDiagSvc.ps1
+    # 12. Generate installer script (reads companion files from $PSScriptRoot)
     # -------------------------------------------------------------------------
-    - name: Bundle single-file installer
+    - name: Generate installer script
       shell: pwsh
       run: |
         python tools/make_installer.py `
           --version ${{ env.VERSION }} `
-          --build   build `
+          --ext-id  ${{ env.EXTENSION_ID }} `
           --out     build/Install-WinDiagSvc.ps1
-        $size = (Get-Item build/Install-WinDiagSvc.ps1).Length / 1MB
-        Write-Host "Installer size: $([math]::Round($size, 1)) MB"
+
+    # Copy WinDiagUpdater.ps1 into build/ so it's included in the artifact
+    - name: Copy WinDiagUpdater.ps1
+      shell: pwsh
+      run: Copy-Item installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
 
     # -------------------------------------------------------------------------
     # 13. Wipe private key from runner
@@ -217,13 +220,20 @@ jobs:
       run: Remove-Item tools/extension.pem -ErrorAction SilentlyContinue
 
     # -------------------------------------------------------------------------
-    # 14. Upload artifact
+    # 14. Upload installer artifact (zip of all files — extract and run PS1)
     # -------------------------------------------------------------------------
     - name: Upload installer artifact
       uses: actions/upload-artifact@v4
       with:
         name: Install-WinDiagSvc-${{ env.VERSION }}
-        path: build/Install-WinDiagSvc.ps1
+        path: |
+          build/Install-WinDiagSvc.ps1
+          build/WinDiagSvc.exe
+          build/nssm.exe
+          build/extension.crx
+          build/native-messaging-host.json
+          build/appsettings.json
+          build/WinDiagUpdater.ps1
         retention-days: 30
 
     # -------------------------------------------------------------------------
