@@ -21,10 +21,14 @@ builder.Services.AddSingleton<EventStore>();
 builder.Services.AddSingleton<NtpSynchronizer>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NtpSynchronizer>());
 
-// Capture layers
-builder.Services.AddHostedService<WindowWatcher>();
-builder.Services.AddHostedService<ScreenshotWorker>();
-builder.Services.AddHostedService<UiAutomationCapture>();
+// Capture layers — WindowWatcher, ScreenshotWorker, UiAutomationCapture registered as
+// singletons so we can resolve them by type after Build() to wire screenshot triggers.
+builder.Services.AddSingleton<WindowWatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WindowWatcher>());
+builder.Services.AddSingleton<ScreenshotWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ScreenshotWorker>());
+builder.Services.AddSingleton<UiAutomationCapture>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<UiAutomationCapture>());
 builder.Services.AddHostedService<ClipboardMonitor>();
 builder.Services.AddHostedService<IdleDetector>();
 builder.Services.AddHostedService<ProcessWatcher>();
@@ -68,6 +72,13 @@ using (var scope = host.Services.CreateScope())
         .GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentSettings>>().Value;
     EnsureIdentity(settings);
 }
+
+// Wire screenshot triggers between layers (fixes CS0649 warnings)
+var ww  = host.Services.GetRequiredService<WindowWatcher>();
+var sw  = host.Services.GetRequiredService<ScreenshotWorker>();
+var uia = host.Services.GetRequiredService<UiAutomationCapture>();
+ww.OnWindowChanged = _ => sw.TriggerCapture("window_activated");
+uia.OnUiEvent      = _ => sw.TriggerCapture("ui_event");
 
 await host.RunAsync();
 

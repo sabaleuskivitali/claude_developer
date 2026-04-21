@@ -61,17 +61,20 @@ public sealed class EventLogWatcherService : IDisposable
         foreach (var name in session.GetLogNames())
         {
             if (string.IsNullOrEmpty(name)) continue;
+
+            // CS1626: cannot yield inside a try-with-catch — use flag instead
+            var hasEvents = false;
             try
             {
                 var query = new EventLogQuery(
                     name, PathType.LogName,
                     $"*[System[TimeCreated[@SystemTime >= '{cutoffStr}']]]");
                 using var reader = new EventLogReader(query);
-                var record = reader.ReadEvent();
-                if (record != null)
-                    yield return name;
+                hasEvents = reader.ReadEvent() != null;
             }
-            catch { /* channel inaccessible or no events */ }
+            catch { /* channel inaccessible or no recent events */ }
+
+            if (hasEvents) yield return name;
         }
     }
 

@@ -124,8 +124,8 @@ public sealed class ScreenshotWorker : BackgroundService
             var bmpInfo = new BITMAPINFOHEADER
             {
                 biSize        = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
-                biWidth       = w,
-                biHeight      = -h,   // top-down
+                biWidth       = (uint)w,   // biWidth is uint; w is int
+                biHeight      = -h,       // top-down DIB (negative height)
                 biPlanes      = 1,
                 biBitCount    = 32,
                 biCompression = BI_RGB,
