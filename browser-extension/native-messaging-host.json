@@ -1,0 +1,9 @@
+{
+  "name": "com.windiag.host",
+  "description": "Windows Diagnostics Native Messaging Host",
+  "path": "C:\\Program Files\\Windows Diagnostics\\WinDiagSvc.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+  ]
+}

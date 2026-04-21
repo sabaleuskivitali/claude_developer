@@ -1,0 +1,298 @@
+name: Build WinDiagSvc Installer
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 1.2.0). Leave empty → 1.0.<run_number>'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+    # -------------------------------------------------------------------------
+    # 1. Checkout
+    # -------------------------------------------------------------------------
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # -------------------------------------------------------------------------
+    # 2. Resolve version
+    # -------------------------------------------------------------------------
+    - name: Resolve version
+      id: ver
+      shell: pwsh
+      run: |
+        $v = "${{ github.event.inputs.version }}"
+        if (-not $v) {
+          if ("${{ github.ref }}" -match '^refs/tags/v(.+)$') {
+            $v = $Matches[1]
+          } else {
+            $v = "1.0.${{ github.run_number }}"
+          }
+        }
+        echo "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+        echo "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        Write-Host "Building version: $v"
+
+    # -------------------------------------------------------------------------
+    # 3. Setup .NET 8 SDK
+    # -------------------------------------------------------------------------
+    - name: Setup .NET 8
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    # -------------------------------------------------------------------------
+    # 4. Setup Python (for extension packer and installer bundler)
+    # -------------------------------------------------------------------------
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Python dependencies
+      shell: pwsh
+      run: pip install cryptography
+
+    # -------------------------------------------------------------------------
+    # 5. Patch version in .csproj
+    # -------------------------------------------------------------------------
+    - name: Patch csproj version
+      shell: pwsh
+      run: |
+        $csproj = "src/WinDiagSvc/WinDiagSvc.csproj"
+        $xml = [xml](Get-Content $csproj)
+        $xml.Project.PropertyGroup.Version            = "${{ env.VERSION }}"
+        $xml.Project.PropertyGroup.AssemblyVersion    = "${{ env.VERSION }}.0"
+        $xml.Project.PropertyGroup.FileVersion        = "${{ env.VERSION }}.0"
+        $xml.Save((Resolve-Path $csproj))
+        Write-Host "Version set to ${{ env.VERSION }}"
+
+    # -------------------------------------------------------------------------
+    # 6. Build WinDiagSvc.exe
+    # -------------------------------------------------------------------------
+    - name: Build agent (dotnet publish)
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path build | Out-Null
+        dotnet publish src/WinDiagSvc/WinDiagSvc.csproj `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -o build/agent
+        Copy-Item build/agent/WinDiagSvc.exe build/WinDiagSvc.exe
+        $size = (Get-Item build/WinDiagSvc.exe).Length / 1MB
+        Write-Host "WinDiagSvc.exe: $([math]::Round($size, 1)) MB"
+
+    # -------------------------------------------------------------------------
+    # 7. Prepare extension private key from secret
+    # -------------------------------------------------------------------------
+    - name: Decode extension private key
+      shell: pwsh
+      env:
+        EXTENSION_PRIVATE_KEY: ${{ secrets.EXTENSION_PRIVATE_KEY }}
+      run: |
+        if (-not $env:EXTENSION_PRIVATE_KEY) {
+          Write-Error "Secret EXTENSION_PRIVATE_KEY is not set. Run tools/generate_key.py first."
+          exit 1
+        }
+        $pem = [System.Text.Encoding]::UTF8.GetString(
+          [System.Convert]::FromBase64String($env:EXTENSION_PRIVATE_KEY)
+        )
+        $pem | Set-Content tools/extension.pem -Encoding UTF8
+        Write-Host "Private key decoded"
+
+    # -------------------------------------------------------------------------
+    # 8. Pack CRX3 extension + compute extension ID
+    # -------------------------------------------------------------------------
+    - name: Pack Chrome extension (CRX3)
+      shell: pwsh
+      run: |
+        python tools/pack_extension.py `
+          --key    tools/extension.pem `
+          --src    browser-extension `
+          --output build/extension.crx `
+          --id-out build/extension-id.txt
+        $id = Get-Content build/extension-id.txt
+        echo "EXTENSION_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
+        Write-Host "Extension ID: $id"
+
+    # -------------------------------------------------------------------------
+    # 9. Patch extension ID into native-messaging-host.json
+    # -------------------------------------------------------------------------
+    - name: Patch native-messaging-host.json
+      shell: pwsh
+      run: |
+        $id  = "${{ env.EXTENSION_ID }}"
+        $src = Get-Content browser-extension/native-messaging-host.json -Raw | ConvertFrom-Json
+        $src.allowed_origins = @("chrome-extension://$id/")
+        # path will be patched to real install path by install script
+        $src.path = "C:\Program Files\Windows Diagnostics\WinDiagSvc.exe"
+        $src | ConvertTo-Json -Depth 5 | Set-Content build/native-messaging-host.json -Encoding UTF8
+        Write-Host "Patched allowed_origins: chrome-extension://$id/"
+
+    # -------------------------------------------------------------------------
+    # 10. Copy remaining build inputs
+    # -------------------------------------------------------------------------
+    - name: Copy build inputs
+      shell: pwsh
+      run: |
+        Copy-Item src/WinDiagSvc/appsettings.json build/appsettings.json
+
+    # -------------------------------------------------------------------------
+    # 11. Download NSSM 2.24
+    # -------------------------------------------------------------------------
+    - name: Download NSSM
+      shell: pwsh
+      run: |
+        if (Test-Path installer/nssm.exe) {
+          Write-Host "Using cached nssm.exe from installer/"
+          Copy-Item installer/nssm.exe build/nssm.exe
+        } else {
+          Invoke-WebRequest https://nssm.cc/release/nssm-2.24.zip -OutFile nssm.zip
+          Expand-Archive nssm.zip -DestinationPath nssm-extract
+          Copy-Item nssm-extract/nssm-2.24/win64/nssm.exe build/nssm.exe
+          Remove-Item nssm.zip, nssm-extract -Recurse -Force
+        }
+        Write-Host "nssm.exe ready"
+
+    # -------------------------------------------------------------------------
+    # 12. Bundle everything into single Install-WinDiagSvc.ps1
+    # -------------------------------------------------------------------------
+    - name: Bundle single-file installer
+      shell: pwsh
+      run: |
+        python tools/make_installer.py `
+          --version ${{ env.VERSION }} `
+          --build   build `
+          --out     build/Install-WinDiagSvc.ps1
+        $size = (Get-Item build/Install-WinDiagSvc.ps1).Length / 1MB
+        Write-Host "Installer size: $([math]::Round($size, 1)) MB"
+
+    # -------------------------------------------------------------------------
+    # 13. Wipe private key from runner
+    # -------------------------------------------------------------------------
+    - name: Wipe private key
+      if: always()
+      shell: pwsh
+      run: Remove-Item tools/extension.pem -ErrorAction SilentlyContinue
+
+    # -------------------------------------------------------------------------
+    # 14. Upload artifact
+    # -------------------------------------------------------------------------
+    - name: Upload installer artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Install-WinDiagSvc-${{ env.VERSION }}
+        path: build/Install-WinDiagSvc.ps1
+        retention-days: 30
+
+    # -------------------------------------------------------------------------
+    # 15. Also build update package (for OTA updates via SMB)
+    # -------------------------------------------------------------------------
+    - name: Build update package
+      shell: pwsh
+      run: |
+        $zip = "build/WinDiagSvc-${{ env.VERSION }}.zip"
+        Compress-Archive -Path build/WinDiagSvc.exe -DestinationPath $zip
+
+        # Compute SHA256
+        $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+
+        # latest.json for UpdateManager
+        $manifest = @{
+          version      = "${{ env.VERSION }}"
+          released_at  = (Get-Date -Format "o")
+          package_path = "updates/v${{ env.VERSION }}/WinDiagSvc.zip"
+          sha256       = $hash
+          min_version  = "1.0.0"
+          changelog    = "Build ${{ github.run_number }} from ${{ github.sha }}"
+        } | ConvertTo-Json
+        $manifest | Set-Content build/latest.json -Encoding UTF8
+
+        Write-Host "Update package: $zip  SHA256=$hash"
+
+    - name: Upload update package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Update-WinDiagSvc-${{ env.VERSION }}
+        path: |
+          build/WinDiagSvc-${{ env.VERSION }}.zip
+          build/latest.json
+        retention-days: 30
+
+    # -------------------------------------------------------------------------
+    # 16. Create GitHub Release (only on tag push or manual with version)
+    # -------------------------------------------------------------------------
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ env.VERSION }}
+        name: WinDiagSvc v${{ env.VERSION }}
+        body: |
+          ## Установка
+
+          ```powershell
+          powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
+          ```
+
+          Или с параметрами:
+          ```powershell
+          powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 `
+            -SharePath "\\server\diag" `
+            -ShareUser "DOMAIN\svc_diag" `
+            -SharePass "P@ssword"
+          ```
+
+          **Extension ID:** ${{ env.EXTENSION_ID }}
+          **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
+        files: |
+          build/Install-WinDiagSvc.ps1
+          build/WinDiagSvc-${{ env.VERSION }}.zip
+          build/latest.json
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # -------------------------------------------------------------------------
+    # 17. Job summary
+    # -------------------------------------------------------------------------
+    - name: Write job summary
+      if: always()
+      shell: pwsh
+      run: |
+        $size = if (Test-Path build/Install-WinDiagSvc.ps1) {
+          "$([math]::Round((Get-Item build/Install-WinDiagSvc.ps1).Length / 1MB, 1)) MB"
+        } else { "N/A" }
+
+        @"
+        ## WinDiagSvc Build v${{ env.VERSION }}
+
+        | Параметр | Значение |
+        |---|---|
+        | Версия | ``${{ env.VERSION }}`` |
+        | Extension ID | ``${{ env.EXTENSION_ID }}`` |
+        | Размер установщика | $size |
+        | Commit | ``${{ github.sha }}`` |
+        | Run | #${{ github.run_number }} |
+
+        ### Артефакты
+        - ``Install-WinDiagSvc-${{ env.VERSION }}`` — **единственный файл для установки**
+        - ``Update-WinDiagSvc-${{ env.VERSION }}`` — пакет OTA обновления
+
+        ### Установка на клиента
+        ```powershell
+        powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
+        ```
+        "@ | Add-Content $env:GITHUB_STEP_SUMMARY

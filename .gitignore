@@ -1,0 +1,17 @@
+# Private key — NEVER commit
+tools/extension.pem
+
+# Build artifacts
+build/
+src/WinDiagSvc/bin/
+src/WinDiagSvc/obj/
+
+# Temp
+nssm.zip
+nssm-extract/
+
+# IDE
+.vs/
+*.user
+**/.DS_Store
+.DS_Store
