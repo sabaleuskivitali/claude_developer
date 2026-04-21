@@ -1,5 +1,3 @@
-using Microsoft.Diagnostics.Tracing;
-using Microsoft.Diagnostics.Tracing.Session;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WinDiagSvc.Models;
@@ -8,9 +6,10 @@ using WinDiagSvc.Storage;
 namespace WinDiagSvc.Capture;
 
 /// <summary>
-/// ETW Kernel-File provider for FileCreate / FileWrite events.
+/// Watches common user document directories for file create/write events.
+/// Uses FileSystemWatcher — simpler than ETW, no privilege requirements.
 /// Filtered to configured extensions (office docs, 1C, etc.).
-/// Requires LocalSystem (SeSystemProfilePrivilege).
+/// ETW kernel-level tracking can replace this post-pilot if deeper coverage is needed.
 /// </summary>
 public sealed class FileEventCapture : BackgroundService
 {
@@ -19,8 +18,16 @@ public sealed class FileEventCapture : BackgroundService
     private readonly AgentSettings _settings;
     private readonly ILogger<FileEventCapture> _logger;
 
-    private static readonly HashSet<string> _fileOps = new(StringComparer.OrdinalIgnoreCase)
-        { "FileCreate", "FileWrite" };
+    private readonly List<FileSystemWatcher> _watchers = new();
+
+    // Directories to watch (environment-expanded at start)
+    private static readonly string[] _watchRoots =
+    [
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    ];
 
     public FileEventCapture(
         EventStore store,
@@ -34,60 +41,47 @@ public sealed class FileEventCapture : BackgroundService
         _logger   = logger;
     }
 
-    protected override Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var thread = new Thread(() => WatchFiles(ct));
-        thread.IsBackground = true;
-        thread.Start();
-        return Task.Delay(Timeout.Infinite, ct);
+        var extensions = new HashSet<string>(
+            _settings.FileExtensionsToTrack,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in _watchRoots)
+        {
+            if (!Directory.Exists(root)) continue;
+            try
+            {
+                var w = new FileSystemWatcher(root)
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter          = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                    EnableRaisingEvents   = true,
+                };
+                w.Created += (_, e) => Handle(e.FullPath, nameof(EventType.FileCreate), extensions);
+                w.Changed += (_, e) => Handle(e.FullPath, nameof(EventType.FileWrite),  extensions);
+                _watchers.Add(w);
+                _logger.LogDebug("FileEventCapture watching: {Dir}", root);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("FileEventCapture: failed to watch {Dir}: {Msg}", root, ex.Message);
+            }
+        }
+
+        _logger.LogInformation("FileEventCapture: watching {N} directories", _watchers.Count);
+
+        await Task.Delay(Timeout.Infinite, ct);
     }
 
-    private void WatchFiles(CancellationToken ct)
-    {
-        TraceEventSession? session = null;
-        try
-        {
-            var extensions = new HashSet<string>(
-                _settings.FileExtensionsToTrack,
-                StringComparer.OrdinalIgnoreCase);
-
-            session = new TraceEventSession("WinDiagFileSession");
-            session.EnableKernelProvider(KernelTraceEventParser.Keywords.FileIO |
-                                         KernelTraceEventParser.Keywords.FileIOInit);
-
-            session.Source.Kernel.FileIOCreate += e =>
-            {
-                var ext = Path.GetExtension(e.FileName);
-                if (!extensions.Contains(ext)) return;
-                Store(e.FileName, nameof(EventType.FileCreate));
-            };
-
-            session.Source.Kernel.FileIOWrite += e =>
-            {
-                var ext = Path.GetExtension(e.FileName);
-                if (!extensions.Contains(ext)) return;
-                Store(e.FileName, nameof(EventType.FileWrite));
-            };
-
-            ct.Register(() => session.Stop());
-            session.Source.Process();
-        }
-        catch (Exception ex)
-        {
-            WriteLayerError(ex);
-        }
-        finally
-        {
-            session?.Dispose();
-        }
-    }
-
-    private void Store(string filePath, string eventType)
+    private void Handle(string fullPath, string eventType, HashSet<string> extensions)
     {
         try
         {
-            var ext  = Path.GetExtension(filePath);
-            var name = Path.GetFileName(filePath);
+            var ext = Path.GetExtension(fullPath);
+            if (!extensions.Contains(ext)) return;
+
+            var name = Path.GetFileName(fullPath);
             var raw  = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             _store.Insert(new ActivityEvent
@@ -101,12 +95,19 @@ public sealed class FileEventCapture : BackgroundService
                 DriftRatePpm  = _ntp.DriftRatePpm,
                 Layer         = "system",
                 EventType     = eventType,
-                DocumentPath  = filePath.Length > 500 ? filePath[..500] : filePath,
+                DocumentPath  = fullPath.Length > 500 ? fullPath[..500] : fullPath,
                 DocumentName  = name,
                 FileExtension = ext,
             });
         }
         catch (Exception ex) { WriteLayerError(ex); }
+    }
+
+    public override Task StopAsync(CancellationToken ct)
+    {
+        foreach (var w in _watchers) w.Dispose();
+        _watchers.Clear();
+        return base.StopAsync(ct);
     }
 
     private void WriteLayerError(Exception ex) =>

@@ -15,7 +15,7 @@ public sealed class NtpSynchronizer : BackgroundService
     private readonly AgentSettings _settings;
     private readonly ILogger<NtpSynchronizer> _logger;
 
-    private readonly Lock _lock = new();
+    private readonly object _lock = new();
     private long   _lastDriftMs;
     private double _driftRatePpm;
     private long   _lastNtpLocalMs;   // local clock at last successful sync
@@ -110,17 +110,17 @@ public sealed class NtpSynchronizer : BackgroundService
         _logger.LogWarning("All NTP servers failed — using local clock");
     }
 
-    private static async Task<(long driftMs, long roundTripMs)?> QueryMedianAsync(string server)
+    private static async Task<(long driftMs, long roundTripMs)?> QueryMedianAsync(string server, CancellationToken ct = default)
     {
         const int Samples = 5;
         var drifts    = new long[Samples];
         var roundTrips = new long[Samples];
 
-        using var client = new NtpClient(server);
+        var client = new NtpClient(server);
 
         for (var i = 0; i < Samples; i++)
         {
-            var clock = await client.QueryAsync();
+            var clock = await client.QueryAsync(ct);
             drifts[i]     = (long)clock.CorrectionOffset.TotalMilliseconds;
             roundTrips[i] = (long)clock.RoundTripTime.TotalMilliseconds;
             if (i < Samples - 1)

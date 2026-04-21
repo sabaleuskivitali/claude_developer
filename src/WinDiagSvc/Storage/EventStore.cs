@@ -16,7 +16,7 @@ public sealed class EventStore : IDisposable
 {
     private readonly SqliteConnection _conn;
     private readonly AgentSettings _settings;
-    private readonly Lock _writeLock = new();
+    private readonly object _writeLock = new();
     private int _sequenceIndex;
 
     public Guid SessionId { get; } = Guid.NewGuid();
