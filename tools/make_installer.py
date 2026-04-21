@@ -115,8 +115,9 @@ Write-Step "Installing Windows Service: $ServiceName"
 $nssm = "$InstallDir\nssm.exe"
 $exe  = "$InstallDir\WinDiagSvc.exe"
 
-& $nssm stop    $ServiceName 2>$null
-& $nssm remove  $ServiceName confirm 2>$null
+# stop/remove may fail if service doesn't exist yet — suppress errors
+& $nssm stop    $ServiceName 2>&1 | Out-Null
+& $nssm remove  $ServiceName confirm 2>&1 | Out-Null
 
 & $nssm install $ServiceName $exe
 & $nssm set     $ServiceName AppDirectory    $InstallDir
