@@ -81,7 +81,18 @@ jobs:
     # -------------------------------------------------------------------------
     - name: Restore NuGet packages
       shell: pwsh
-      run: dotnet restore src/WinDiagSvc/WinDiagSvc.csproj -r win-x64
+      run: |
+        $output = dotnet restore src/WinDiagSvc/WinDiagSvc.csproj -r win-x64 2>&1
+        $output | Write-Host
+        if ($LASTEXITCODE -ne 0) {
+          @"
+        ## Restore Errors
+        ``````
+        $($output -join "`n")
+        ``````
+        "@ | Add-Content $env:GITHUB_STEP_SUMMARY
+          exit 1
+        }
 
     # -------------------------------------------------------------------------
     # 6b. Build WinDiagSvc.exe
