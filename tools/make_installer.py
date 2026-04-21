@@ -116,8 +116,10 @@ $nssm = "$InstallDir\nssm.exe"
 $exe  = "$InstallDir\WinDiagSvc.exe"
 
 # stop/remove may fail if service doesn't exist yet — suppress errors
+$prev = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
 & $nssm stop    $ServiceName 2>&1 | Out-Null
 & $nssm remove  $ServiceName confirm 2>&1 | Out-Null
+$ErrorActionPreference = $prev
 
 & $nssm install $ServiceName $exe
 & $nssm set     $ServiceName AppDirectory    $InstallDir
