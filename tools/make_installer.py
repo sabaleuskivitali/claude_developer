@@ -116,7 +116,7 @@ if ($ShareUser -and $SharePass) {{
 }}
 
 # ---------------------------------------------------------------------------
-# 6. Scheduled Task (AtLogOn, Interactive — full desktop access)
+# 6. Scheduled Task (AtLogOn, Interactive - full desktop access)
 # ---------------------------------------------------------------------------
 Write-Step "Registering Scheduled Task: $TaskName"
 $exe = "$InstallDir\WinDiagSvc.exe"
@@ -192,7 +192,7 @@ $state = (Get-ScheduledTask -TaskName $TaskName).State
 if ($state -eq "Running") {{
     Write-OK "Agent is running"
 }} else {{
-    Write-Warn "Task state: $state — check logs at $DataDir\logs"
+    Write-Warn "Task state: $state - check logs at $DataDir\logs"
 }}
 
 # ---------------------------------------------------------------------------
