@@ -166,11 +166,25 @@ foreach ($p in @($chromePath, $edgePath)) {{
 Write-OK "Native Messaging registered (Chrome + Edge)"
 
 # ---------------------------------------------------------------------------
-# 8. Extension force-install via GPO registry
+# 8. Extension force-install via GPO registry + update manifest
 # ---------------------------------------------------------------------------
 Write-Step "Force-installing browser extension"
+
+# Chrome 90+ requires an XML update manifest instead of direct CRX path
 $InstallDirFwd = $InstallDir.Replace('\', '/')
-$extEntry  = "$ExtensionId;file:///$InstallDirFwd/extension.crx"
+$manifestPath  = "$InstallDir\update_manifest.xml"
+$manifestFwd   = "$InstallDirFwd/update_manifest.xml"
+
+@"
+<?xml version='1.0' encoding='UTF-8'?>
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+  <app appid='$ExtensionId'>
+    <updatecheck codebase='file:///$InstallDirFwd/extension.crx' version='1.0.0' />
+  </app>
+</gupdate>
+"@ | Set-Content $manifestPath -Encoding UTF8
+
+$extEntry  = "$ExtensionId;file:///$manifestFwd"
 $chromePol = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 $edgePol   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 foreach ($pol in @($chromePol, $edgePol)) {{
