@@ -70,7 +70,7 @@ Write-Step "Extracting embedded files"
 function Expand-Embedded {{
     param([string]$Name, [string]$B64)
     $dest = Join-Path $TempDir $Name
-    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String($B64))
+    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String(($B64 -replace '[\r\n]','')))
     return $dest
 }}
 
@@ -223,7 +223,8 @@ Write-Host "========================================" -ForegroundColor Green
 
 def b64_file(path: Path) -> str:
     """Read file and return base64 string split into 76-char lines."""
-    return base64.b64encode(path.read_bytes()).decode()
+    raw = base64.b64encode(path.read_bytes()).decode()
+    return "\n".join(raw[i:i+76] for i in range(0, len(raw), 76))
 
 
 def main():
@@ -261,7 +262,7 @@ def main():
         print(f"  {fname:35s}  {size:>10,} bytes")
         b64 = b64_file(path)
         extractions.append(
-            f'${var} = Expand-Embedded "{fname}" "{b64}"'
+            f'$_b64 = @"\n{b64}\n"@\n${var} = Expand-Embedded "{fname}" $_b64'
         )
 
     script = INSTALLER_TEMPLATE.format(
