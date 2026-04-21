@@ -26,9 +26,11 @@ INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -SharePath "\\server\diag" -ShareUser "DOM\svc" -SharePass "P@ss"
 
 param(
-    [string]$SharePath  = "\\server\diag",
-    [string]$ShareUser  = "",
-    [string]$SharePass  = ""
+    [string]$SharePath    = "\\server\diag",
+    [string]$ShareUser    = "",
+    [string]$SharePass    = "",
+    [string]$ServiceUser  = "",   # e.g. ".\sabal" or "DOMAIN\user" — runs as this user for desktop access
+    [string]$ServicePass  = ""    # password for ServiceUser (required if ServiceUser is set)
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,12 +125,21 @@ $ErrorActionPreference = $prev
 
 & $nssm install $ServiceName $exe
 & $nssm set     $ServiceName AppDirectory    $InstallDir
-& $nssm set     $ServiceName ObjectName      LocalSystem
 & $nssm set     $ServiceName Start           SERVICE_AUTO_START
 & $nssm set     $ServiceName AppPriority     BELOW_NORMAL_PRIORITY_CLASS
 & $nssm set     $ServiceName DisplayName     $DisplayName
 & $nssm set     $ServiceName Description     "Windows Diagnostics Service"
 & $nssm set     $ServiceName AppNoConsole    1
+
+# Run as specific user for desktop/screenshot access, or LocalSystem for ETW
+if ($ServiceUser -and $ServicePass) {{
+    & $nssm set $ServiceName ObjectName $ServiceUser $ServicePass
+    Write-OK "Service account: $ServiceUser"
+}} else {{
+    & $nssm set $ServiceName ObjectName LocalSystem
+    Write-Warn "Running as LocalSystem — screenshots disabled (Session 0 isolation)"
+    Write-Warn "Re-run with: -ServiceUser '.\username' -ServicePass 'password'"
+}}
 Write-OK "Service installed"
 
 # ---------------------------------------------------------------------------
