@@ -29,8 +29,7 @@ public sealed class BrowserQueueImporter : BackgroundService
     };
 
     private static readonly string QueueFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "Microsoft", "Diagnostics", "browser_queue.jsonl");
+        Path.GetTempPath(), "WinDiagBrowserQueue.jsonl");
 
     public BrowserQueueImporter(
         EventStore store,

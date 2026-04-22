@@ -43,9 +43,11 @@ public static class NativeMessagingDetector
     /// </summary>
     public static async Task RunAsync()
     {
-        var queueFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "Microsoft", "Diagnostics", "browser_queue.jsonl");
+        // Use %TEMP% — writable by standard user (Chrome launches host without elevation).
+        // C:\ProgramData\Microsoft\Diagnostics is admin-only for writes.
+        // Both native host (Chrome subprocess) and main service (Scheduled Task)
+        // run as the same user, so both see the same %TEMP% path.
+        var queueFile = Path.Combine(Path.GetTempPath(), "WinDiagBrowserQueue.jsonl");
 
         // Ensure directory exists (main service creates it, but host might start first)
         try { Directory.CreateDirectory(Path.GetDirectoryName(queueFile)!); }
