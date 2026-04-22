@@ -5,26 +5,34 @@
 const HOST_NAME = "com.windiag.host";
 
 let port        = null;
-let reconnectMs = 2000;   // start at 2 s, doubles on each failure, cap at 60 s
+let reconnectMs = 200;    // start fast (domain: agent may not be ready at Chrome startup)
+let reconnAttempts = 0;
 let reconnTimer = null;
 
 function connectNative() {
   clearTimeout(reconnTimer);
   try {
     port = chrome.runtime.connectNative(HOST_NAME);
-    reconnectMs = 2000;   // reset backoff on successful connect
+    reconnectMs    = 200;   // reset on success
+    reconnAttempts = 0;
 
     port.onDisconnect.addListener(() => {
       port = null;
-      // chrome.runtime.lastError consumed here to suppress console noise
-      const _err = chrome.runtime.lastError;
+      const _err = chrome.runtime.lastError;  // consumed to suppress noise
+      reconnAttempts++;
+      // Fast retries for the first 10 attempts (handles domain startup timing),
+      // then exponential backoff up to 60 s
+      reconnectMs = reconnAttempts <= 10
+        ? Math.min(reconnectMs * 2, 2_000)
+        : Math.min(reconnectMs * 2, 60_000);
       reconnTimer = setTimeout(connectNative, reconnectMs);
-      reconnectMs = Math.min(reconnectMs * 2, 60_000);
     });
   } catch {
-    // connectNative itself failed (e.g. host manifest missing) — retry with backoff
+    reconnAttempts++;
+    reconnectMs = reconnAttempts <= 10
+      ? Math.min(reconnectMs * 2, 2_000)
+      : Math.min(reconnectMs * 2, 60_000);
     reconnTimer = setTimeout(connectNative, reconnectMs);
-    reconnectMs = Math.min(reconnectMs * 2, 60_000);
   }
 }
 

@@ -84,12 +84,17 @@ public sealed record ActivityEvent
     public string? XhrMethod          { get; init; }
     public int     XhrStatus          { get; init; }
 
+    // Per-layer health stats — populated only in HeartbeatPulse events
+    public Dictionary<string, LayerStat>? LayerStats { get; init; }
+
     // Resolved case ID: Vision → regex → document name
     [JsonIgnore]
     public string? CaseId => VisionCaseId ?? CaseIdCandidate ?? DocumentName;
 
     // Full JSON payload — schema migration insurance
     public string Payload { get; init; } = "";
+
+    public record LayerStat(int LastEventSec, int Events5Min, int Errors5Min, string Status);
 
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {

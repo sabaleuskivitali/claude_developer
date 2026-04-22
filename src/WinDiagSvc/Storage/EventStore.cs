@@ -3,6 +3,7 @@ using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using WinDiagSvc.Management;
 using WinDiagSvc.Models;
 
 namespace WinDiagSvc.Storage;
@@ -15,15 +16,17 @@ namespace WinDiagSvc.Storage;
 public sealed class EventStore : IDisposable
 {
     private readonly SqliteConnection _conn;
-    private readonly AgentSettings _settings;
+    private readonly AgentSettings    _settings;
+    private readonly LayerHealthTracker? _tracker;
     private readonly object _writeLock = new();
     private int _sequenceIndex;
 
     public Guid SessionId { get; } = Guid.NewGuid();
 
-    public EventStore(IOptions<AgentSettings> options)
+    public EventStore(IOptions<AgentSettings> options, LayerHealthTracker tracker)
     {
         _settings = options.Value;
+        _tracker  = tracker;
 
         var dbPath = _settings.ExpandedDbPath;
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
@@ -89,6 +92,11 @@ public sealed class EventStore : IDisposable
 
     public void Insert(ActivityEvent ev)
     {
+        // Update per-layer health tracker on every event write
+        _tracker?.RecordEvent(ev.Layer);
+        if (ev.EventType == nameof(EventType.LayerError))
+            _tracker?.RecordError(ev.Layer, ev.RawMessage);
+
         var idx = Interlocked.Increment(ref _sequenceIndex);
         var json = ev.ToJson();
 

@@ -36,6 +36,10 @@ public sealed class AgentSettings
     public string ExtensionId       { get; set; } = "";
     public int    ExtensionHostPort { get; set; } = 9876;
 
+    // LayerWatchdog — how often to check (minutes) and restart after N consecutive stuck cycles
+    public int WatchdogIntervalMinutes { get; set; } = 2;
+    public int WatchdogRestartCycles   { get; set; } = 2;
+
     public string ExpandedDbPath        => Environment.ExpandEnvironmentVariables(DbPath);
     public string ExpandedScreenshotDir => Environment.ExpandEnvironmentVariables(ScreenshotDir);
     public string ExpandedLogDir        => Environment.ExpandEnvironmentVariables(LogDir);

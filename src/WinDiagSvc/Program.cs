@@ -1,11 +1,11 @@
 using NReco.Logging.File;
+using WinDiagSvc.Browser;
 using WinDiagSvc.Capture;
 using WinDiagSvc.Capture.AppLogScanner;
+using WinDiagSvc.Management;
 using WinDiagSvc.Models;
 using WinDiagSvc.Storage;
 using WinDiagSvc.Sync;
-using WinDiagSvc.Management;
-using WinDiagSvc.Browser;
 
 // -----------------------------------------------------------------------
 // Native Messaging Host mode — launched by Chrome/Edge as subprocess.
@@ -27,6 +27,7 @@ builder.Services.Configure<AgentSettings>(
     builder.Configuration.GetSection("AgentSettings"));
 
 // Storage — singleton: one connection for all layers
+builder.Services.AddSingleton<LayerHealthTracker>();
 builder.Services.AddSingleton<EventStore>();
 
 // NTP — singleton: shared drift state
@@ -57,8 +58,10 @@ builder.Services.AddHostedService<ExtensionHostService>();
 // Sync and management — HTTP API
 builder.Services.AddSingleton<ServerDiscovery>();
 builder.Services.AddSingleton<ErrorReporter>();
+builder.Services.AddSingleton<LayerWatchdog>();
 builder.Services.AddHostedService<HttpSyncWorker>();
 builder.Services.AddHostedService<HeartbeatWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<LayerWatchdog>());
 builder.Services.AddHostedService<HttpCommandPoller>();
 builder.Services.AddHostedService<HttpUpdateManager>();
 builder.Services.AddHostedService<PerformanceMonitor>();

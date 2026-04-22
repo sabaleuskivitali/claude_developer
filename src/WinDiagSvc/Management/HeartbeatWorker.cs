@@ -7,31 +7,32 @@ namespace WinDiagSvc.Management;
 
 /// <summary>
 /// Emits HeartbeatPulse every HeartbeatIntervalSeconds (default 60).
-/// Payload includes NTP drift, pending event count, sync lag.
-/// Server uses these as drift reference points for time interpolation.
+/// Payload includes NTP drift, pending event count, sync lag, and per-layer health stats.
+/// Server uses drift fields as reference points for time interpolation.
 /// </summary>
 public sealed class HeartbeatWorker : BackgroundService
 {
-    private readonly EventStore _store;
-    private readonly NtpSynchronizer _ntp;
-    private readonly AgentSettings _settings;
+    private readonly EventStore          _store;
+    private readonly NtpSynchronizer     _ntp;
+    private readonly LayerHealthTracker  _tracker;
+    private readonly AgentSettings       _settings;
 
-    // Tracked by FileSyncWorker after each sync cycle.
-    // Use Interlocked because volatile is not valid for 64-bit fields in C#.
-    private static long _lastSyncCompletedMs;
     public static long LastSyncCompletedMs
     {
         get => Interlocked.Read(ref _lastSyncCompletedMs);
         set => Interlocked.Exchange(ref _lastSyncCompletedMs, value);
     }
+    private static long _lastSyncCompletedMs;
 
     public HeartbeatWorker(
         EventStore store,
         NtpSynchronizer ntp,
+        LayerHealthTracker tracker,
         IOptions<AgentSettings> options)
     {
         _store    = store;
         _ntp      = ntp;
+        _tracker  = tracker;
         _settings = options.Value;
     }
 
@@ -45,27 +46,38 @@ public sealed class HeartbeatWorker : BackgroundService
 
     private void Pulse()
     {
-        var pending  = _store.CountPending();
-        var failed   = _store.CountFailed();
-        var nowMs    = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs      = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var syncLagSec = LastSyncCompletedMs > 0
             ? (int)((nowMs - LastSyncCompletedMs) / 1000)
             : -1;
 
-        var raw = nowMs;
+        // Build per-layer stats for the payload
+        var layerStats = new Dictionary<string, ActivityEvent.LayerStat>();
+        foreach (var (layer, snap) in _tracker.GetSnapshot())
+        {
+            var secsSince = snap.LastEventMs > 0
+                ? (int)((nowMs - snap.LastEventMs) / 1000)
+                : int.MaxValue;
+            layerStats[layer] = new ActivityEvent.LayerStat(
+                LastEventSec: secsSince == int.MaxValue ? -1 : secsSince,
+                Events5Min:   snap.Events5Min,
+                Errors5Min:   snap.Errors5Min,
+                Status:       snap.Status
+            );
+        }
+
         _store.Insert(new ActivityEvent
         {
             SessionId    = _store.SessionId,
             MachineId    = _settings.MachineId,
             UserId       = _settings.UserId,
-            TimestampUtc = raw,
-            SyncedTs     = _ntp.SyncedTs(raw),
+            TimestampUtc = nowMs,
+            SyncedTs     = _ntp.SyncedTs(nowMs),
             DriftMs      = _ntp.CurrentDriftMs,
             DriftRatePpm = _ntp.DriftRatePpm,
             Layer        = "agent",
             EventType    = nameof(EventType.HeartbeatPulse),
-            // Server reads drift fields directly from the event record columns.
-            // Additional heartbeat fields are in the payload JSON via ToJson().
+            LayerStats   = layerStats,
         });
     }
 }

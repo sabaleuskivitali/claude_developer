@@ -5,9 +5,11 @@ manage.py — CLI for Task Mining Agent server.
 Usage:
   python manage.py status
   python manage.py status <machine_id>
+  python manage.py layers [<machine_id>]
   python manage.py restart <machine_id>
   python manage.py restart --offline
   python manage.py restart --all
+  python manage.py restart-layer <machine_id> <layer>
   python manage.py logs <machine_id> [--errors] [--tail N]
   python manage.py ack <machine_id>
   python manage.py update-config <machine_id> --set KEY=VALUE
@@ -94,6 +96,74 @@ def cmd_status(args):
     conn.close()
 
 
+# ── layers ────────────────────────────────────────────────────────────────────
+
+LAYER_ICON = {"ok": "🟢", "stuck": "🔴", "inactive": "⚪", "error": "🟠"}
+KNOWN_LAYERS = ["window", "visual", "system", "applogs", "browser", "agent"]
+
+
+def cmd_layers(args):
+    """Show per-layer health for each machine from the last HeartbeatPulse."""
+    conn = connect()
+    with conn.cursor() as cur:
+        query = """
+            SELECT DISTINCT ON (machine_id)
+                machine_id,
+                synced_ts,
+                payload->'LayerStats' AS layer_stats
+            FROM events
+            WHERE event_type = 'HeartbeatPulse'
+              AND payload->'LayerStats' IS NOT NULL
+        """
+        if args.machine_id:
+            cur.execute(query + " AND machine_id LIKE %s ORDER BY machine_id, synced_ts DESC",
+                        (args.machine_id + "%",))
+        else:
+            cur.execute(query + " ORDER BY machine_id, synced_ts DESC")
+        rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        print("No heartbeat with layer stats found. Agent version may be older than v1.1.5.")
+        return
+
+    # Header
+    layer_cols = "  ".join(f"{l:<9}" for l in KNOWN_LAYERS)
+    print(f"{'MACHINE':<18} {'HB_AGO':<8}  {layer_cols}")
+    print("-" * (18 + 8 + 4 + len(KNOWN_LAYERS) * 11))
+
+    for r in rows:
+        mid   = (r["machine_id"] or "")[:16]
+        stats = r["layer_stats"] or {}
+        now_s = datetime.now(timezone.utc).timestamp()
+        hb_s  = r["synced_ts"] / 1000
+        hb_ago = fmt_duration(int(now_s - hb_s))
+
+        cells = []
+        for layer in KNOWN_LAYERS:
+            s = stats.get(layer) or {}
+            status = s.get("Status", "inactive")
+            ev5    = s.get("Events5Min", 0)
+            last_s = s.get("LastEventSec", -1)
+            icon   = LAYER_ICON.get(status, "?")
+            # Show events/5min in parentheses if layer is active
+            if status == "ok" and ev5:
+                cell = f"{icon}{ev5:<3}ev"
+            elif status == "stuck":
+                cell = f"{icon}STUCK"
+            elif status == "inactive":
+                cell = f"{icon}—    "
+            else:
+                cell = f"{icon}{status}"
+            cells.append(f"{cell:<9}")
+
+        print(f"{mid:<18} {hb_ago:<8}  {'  '.join(cells)}")
+
+    # Legend
+    print()
+    print("Legend: 🟢=ok  🔴=stuck  ⚪=inactive  🟠=error  (N ev = events in last 5 min)")
+
+
 # ── restart ───────────────────────────────────────────────────────────────────
 
 def write_command(machine_id: str, command: str, params: dict = None) -> str:
@@ -145,8 +215,15 @@ def cmd_restart(args):
         return
 
     for mid in machines:
-        cid = write_command(mid, "restart")
+        cid = write_command(mid, "restart_agent")
         print(f"  → restart queued for {mid[:16]}... (command_id={cid[:8]}...)")
+
+
+def cmd_restart_layer(args):
+    cid = write_command(args.machine_id, "restart_layer", {"layer": args.layer})
+    print(f"  → restart_layer '{args.layer}' queued for {args.machine_id[:16]}... "
+          f"(command_id={cid[:8]}...)")
+    print("  Note: individual layer restart triggers a full process restart.")
 
 
 # ── logs ──────────────────────────────────────────────────────────────────────
@@ -309,11 +386,20 @@ def main():
     p = sub.add_parser("status")
     p.add_argument("machine_id", nargs="?")
 
+    # layers
+    p = sub.add_parser("layers")
+    p.add_argument("machine_id", nargs="?")
+
     # restart
     p = sub.add_parser("restart")
     p.add_argument("machine_id", nargs="?")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--all", action="store_true")
+
+    # restart-layer
+    p = sub.add_parser("restart-layer")
+    p.add_argument("machine_id")
+    p.add_argument("layer", choices=["window", "visual", "system", "applogs", "browser", "agent"])
 
     # logs
     p = sub.add_parser("logs")
@@ -340,13 +426,15 @@ def main():
 
     args = parser.parse_args()
     {
-        "status":        cmd_status,
-        "restart":       cmd_restart,
-        "logs":          cmd_logs,
-        "ack":           cmd_ack,
-        "update-config": cmd_update_config,
-        "perf":          cmd_perf,
-        "etl":           cmd_etl,
+        "status":         cmd_status,
+        "layers":         cmd_layers,
+        "restart":        cmd_restart,
+        "restart-layer":  cmd_restart_layer,
+        "logs":           cmd_logs,
+        "ack":            cmd_ack,
+        "update-config":  cmd_update_config,
+        "perf":           cmd_perf,
+        "etl":            cmd_etl,
     }[args.cmd](args)
 
 

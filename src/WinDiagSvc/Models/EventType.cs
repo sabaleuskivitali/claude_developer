@@ -54,6 +54,10 @@ public enum EventType
     UpdateCompleted,
     PerformanceSnapshot,
 
+    // Layer health
+    LayerStuck,      // emitted when a layer stops sending events beyond threshold
+    LayerRestarted,  // emitted just before process restart triggered by watchdog or command
+
     // Added by server
     VisionContextAdded,
     TaskBoundaryDetected,

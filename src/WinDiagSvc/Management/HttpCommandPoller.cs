@@ -21,6 +21,7 @@ public sealed class HttpCommandPoller : BackgroundService
     private readonly NtpSynchronizer _ntp;
     private readonly ServerDiscovery _discovery;
     private readonly AgentSettings   _settings;
+    private readonly LayerWatchdog   _watchdog;
     private readonly ILogger<HttpCommandPoller> _logger;
 
     private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -30,12 +31,14 @@ public sealed class HttpCommandPoller : BackgroundService
         EventStore store,
         NtpSynchronizer ntp,
         ServerDiscovery discovery,
+        LayerWatchdog watchdog,
         IOptions<AgentSettings> options,
         ILogger<HttpCommandPoller> logger)
     {
         _store     = store;
         _ntp       = ntp;
         _discovery = discovery;
+        _watchdog  = watchdog;
         _settings  = options.Value;
         _logger    = logger;
     }
@@ -110,7 +113,11 @@ public sealed class HttpCommandPoller : BackgroundService
         {
             return cmd.Command switch
             {
-                "restart" => RestartService(),
+                "restart"       => RestartViaWatchdog("remote_command"),
+                "restart_agent" => RestartViaWatchdog("remote_command"),
+                "restart_layer" when cmd.Params != null
+                    && cmd.Params.TryGetValue("layer", out var l)
+                    => RestartLayerViaWatchdog(l?.ToString() ?? ""),
                 "stop"    => StopService(),
                 "start"   => StartService(),
                 "status_dump" => (
@@ -125,6 +132,23 @@ public sealed class HttpCommandPoller : BackgroundService
         {
             return ("error", ex.Message[..Math.Min(ex.Message.Length, 200)]);
         }
+    }
+
+    private (string, string) RestartViaWatchdog(string reason)
+    {
+        // 5 s delay: CheckCommandAsync calls SendAckAsync after this returns,
+        // which is an async HTTP POST that may take up to ~3 s on a slow LAN.
+        // Giving 5 s ensures the ack completes before Environment.Exit fires.
+        Task.Delay(5_000).ContinueWith(_ => _watchdog.RestartAgent(reason));
+        return ("ok", $"Agent restarting in 5s (trigger={reason})");
+    }
+
+    private (string, string) RestartLayerViaWatchdog(string layer)
+    {
+        if (string.IsNullOrWhiteSpace(layer))
+            return ("error", "restart_layer requires params.layer");
+        Task.Delay(5_000).ContinueWith(_ => _watchdog.RestartLayer(layer));
+        return ("ok", $"Layer '{layer}' restart scheduled in 5s (full process restart)");
     }
 
     private static (string, string) RestartService()
