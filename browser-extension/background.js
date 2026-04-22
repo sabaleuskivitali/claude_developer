@@ -30,7 +30,9 @@ function connectNative() {
 
 function send(msg) {
   if (!port) {
-    // Not connected yet — drop the message rather than queuing unboundedly
+    // Service worker was terminated and restarted — reconnect immediately.
+    // This message is dropped but the next event (within the same wake-up) will go through.
+    connectNative();
     return;
   }
   try {
