@@ -105,14 +105,18 @@ def load_sqlite_file(db_path: pathlib.Path, pg_conn) -> int:
     if not rows:
         return 0
 
+    def clean(v):
+        if isinstance(v, str):
+            return v.replace('\x00', '').replace('\\u0000', '')
+        return v
+
     batch = []
     for row in rows:
-        values = list(row)
+        values = [clean(v) for v in row]
         # payload is TEXT in SQLite, needs to be cast to JSONB — pass as str, psycopg2 handles it
         payload_idx = len(values) - 1
         if values[payload_idx] is None:
             values[payload_idx] = "{}"
-        # screenshot_dhash: SQLite INTEGER (unsigned 64-bit stored as signed) → Python int
         batch.append(tuple(values))
 
     with pg_conn.cursor() as cur:
