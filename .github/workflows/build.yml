@@ -204,6 +204,13 @@ jobs:
           --version ${{ env.VERSION }} `
           --ext-id  ${{ env.EXTENSION_ID }} `
           --out     build/Install-WinDiagSvc.ps1
+        # Fail if installer contains non-ASCII (breaks PowerShell on Windows-1252 machines)
+        python -c "
+data = open('build/Install-WinDiagSvc.ps1','rb').read()
+bad = [i for i in range(len(data)) if data[i] > 127]
+if bad: raise SystemExit(f'Non-ASCII bytes in installer at positions: {bad[:5]}')
+print('Installer encoding OK (pure ASCII)')
+"
 
     # Copy WinDiagUpdater.ps1 into build/ so it's included in the artifact
     - name: Copy WinDiagUpdater.ps1

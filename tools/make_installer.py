@@ -3,9 +3,9 @@ make_installer.py - Generate the PowerShell installer script.
 
 Usage:
     python tools/make_installer.py \
-        --version  1.0.42 \
-        --ext-id   cngajkfiaohlbgdippmdgjaknieojjlb \
-        --out      build/Install-WinDiagSvc.ps1
+       --version  1.0.42 \
+       --ext-id   cngajkfiaohlbgdippmdgjaknieojjlb \
+       --out      build/Install-WinDiagSvc.ps1
 """
 
 import argparse
@@ -94,7 +94,7 @@ function Find-WinDiagServer {{
                 $pos += $response[$pos] + 1
             }}
             if ($pos + 10 -gt $response.Length) {{ break }}
-            $type  = ($response[$pos] -shl 8)   -bor $response[$pos+1]
+            $type  = ($response[$pos] -shl 8)  -bor $response[$pos+1]
             $rdLen = ($response[$pos+8] -shl 8) -bor $response[$pos+9]
             $pos  += 10
             if ($type -eq 33 -and $rdLen -ge 7) {{
@@ -121,9 +121,9 @@ function Send-InstallError {{ param($Stage, $Message) {{
             ts         = (Get-Date -Format o)
         }} | ConvertTo-Json -Compress
         Invoke-RestMethod -Uri "$url/api/v1/errors" `
-            -Method POST -Body $body -ContentType "application/json" `
-            -Headers @{{"X-Api-Key"=$ApiKey}} `
-            -SkipCertificateCheck -ErrorAction SilentlyContinue | Out-Null
+           -Method POST -Body $body -ContentType "application/json" `
+           -Headers @{{"X-Api-Key"=$ApiKey}} `
+           -SkipCertificateCheck -ErrorAction SilentlyContinue | Out-Null
     }} catch {{ }}
 }}}}
 
@@ -218,14 +218,14 @@ try {{
     $action    = New-ScheduledTaskAction -Execute $exe
     $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $settings  = New-ScheduledTaskSettingsSet `
-        -ExecutionTimeLimit 0 -RestartCount 3 `
-        -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+       -ExecutionTimeLimit 0 -RestartCount 3 `
+       -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
     $principal = New-ScheduledTaskPrincipal `
-        -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+       -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
 
     Register-ScheduledTask `
-        -TaskName $TaskName -Action $action -Trigger $trigger `
-        -Settings $settings -Principal $principal -Force | Out-Null
+       -TaskName $TaskName -Action $action -Trigger $trigger `
+       -Settings $settings -Principal $principal -Force | Out-Null
 
     Write-OK "Task registered for user: $env:USERNAME"
 }} catch {{
@@ -264,7 +264,7 @@ try {{
 Write-Step "Setting up browser extension"
 $ExtHostPort = 9876
 
-# HKLM policy — works on domain/managed machines (Chrome ignores on personal machines)
+# HKLM policy - works on domain/managed machines (Chrome ignores on personal machines)
 foreach ($pol in @(
     "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
     "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
@@ -291,17 +291,17 @@ if ($isDomain) {{
 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host " BROWSER EXTENSION - ONE-TIME MANUAL STEP"                  -ForegroundColor Cyan
+    Write-Host " BROWSER EXTENSION - ONE-TIME MANUAL STEP"                 -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host " Chrome 133+ blocks auto-install on personal machines."
-    Write-Host " Load unpacked once — persists across restarts and updates."
+    Write-Host " Load unpacked once - persists across restarts and updates."
     Write-Host ""
     Write-Host " 1. Chrome will open at chrome://extensions"
     Write-Host " 2. Enable 'Developer mode' (toggle, top right)"
     Write-Host " 3. Click 'Load unpacked'"
     Write-Host " 4. Select this folder:" -ForegroundColor Yellow
     Write-Host "    $extFolder" -ForegroundColor Cyan
-    Write-Host " 5. Click OK — extension appears with ID: $ExtensionId"
+    Write-Host " 5. Click OK - extension appears with ID: $ExtensionId"
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
 
@@ -322,7 +322,7 @@ if ($isDomain) {{
         Start-Process $chrome "chrome://extensions"
         Write-OK "Chrome opened at chrome://extensions"
     }} else {{
-        Write-Warn "Chrome not found — open chrome://extensions manually"
+        Write-Warn "Chrome not found - open chrome://extensions manually"
     }}
 }}
 
@@ -348,7 +348,7 @@ try {{
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host " WinDiagSvc v$Version - installed!"      -ForegroundColor Green
+Write-Host " WinDiagSvc v$Version - installed!"     -ForegroundColor Green
 Write-Host " Task    : $TaskName (AtLogOn)"
 Write-Host " Data    : $DataDir"
 Write-Host " Logs    : $DataDir\logs"
