@@ -1,13 +1,27 @@
 #Requires -RunAsAdministrator
 # install.ps1 — Task Mining Agent installer
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1
-# Single command installs: Windows Service + Native Messaging + Browser Extension
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File install.ps1 `
+#       -ServerHost 10.8.20.150 `
+#       -ApiKey <key> `
+#       [-SharePath \\10.8.20.150\Share] `
+#       [-ShareUser DOMAIN\user] [-SharePass password]
+#
+# -ServerHost   IP or hostname of the diag_api server (required for L3 / cross-subnet)
+# -ApiKey       API key for authenticating to diag_api  (required)
+# -SharePath    SMB share path; defaults to \\<ServerHost>\Share
+# -ShareUser    SMB credentials; leave empty for domain Integrated Auth
+# -SharePass    SMB password
 
 param(
-    [string]$SharePath  = "\\server\diag",
+    [Parameter(Mandatory)][string]$ServerHost,
+    [Parameter(Mandatory)][string]$ApiKey,
+    [string]$SharePath  = "",          # defaults to \\$ServerHost\Share
     [string]$ShareUser  = "",          # leave empty if domain (Integrated Auth)
     [string]$SharePass  = ""
 )
+
+if (-not $SharePath) { $SharePath = "\\$ServerHost\Share" }
 
 $ErrorActionPreference = "Stop"
 $ServiceName  = "WinDiagSvc"
@@ -44,14 +58,18 @@ Copy-Item "$scriptDir\native-messaging-host.json"  $InstallDir -Force
 Write-OK "Files copied"
 
 # ---------------------------------------------------------------------------
-# 3. Patch SharePath in appsettings.json
+# 3. Patch appsettings.json — no hardcoded values in source, all set here
 # ---------------------------------------------------------------------------
 Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-$cfg.AgentSettings.SharePath = $SharePath
+$cfg.AgentSettings.SharePath      = $SharePath
+$cfg.AgentSettings.ApiKey         = $ApiKey
+$cfg.AgentSettings.DiscoveryHosts = @($ServerHost)   # agent probes http://$ServerHost:49100/discovery
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-Write-OK "SharePath = $SharePath"
+Write-OK "SharePath      = $SharePath"
+Write-OK "ServerHost     = $ServerHost"
+Write-OK "DiscoveryHosts = [$ServerHost]"
 
 # ---------------------------------------------------------------------------
 # 4. Defender exclusions

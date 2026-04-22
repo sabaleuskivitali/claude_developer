@@ -10,9 +10,18 @@ public sealed class AgentSettings
     public string LogDir        { get; set; } = @"%ProgramData%\Microsoft\Diagnostics\logs";
 
     // HTTP API
-    public string ServerUrl        { get; set; } = "";  // empty = mDNS discovery
+    public string ServerUrl        { get; set; } = "";  // empty = autodiscovery
     public string ApiKey           { get; set; } = "";
     public string ServerThumbprint { get; set; } = "";  // SHA256 hex, filled on first connect
+
+    // Discovery hints — filled by install.ps1, not hardcoded
+    // Agent probes http://{host}:49100/discovery to get dynamic port + thumbprint
+    public string[] DiscoveryHosts { get; set; } = [];
+
+    // SMB share — filled by install.ps1
+    public string SharePath { get; set; } = "";
+    public string ShareUser { get; set; } = "";
+    public string SharePass { get; set; } = "";
 
     public int SyncIntervalSeconds       { get; set; } = 30;
     public int ScreenshotIntervalSeconds { get; set; } = 10;

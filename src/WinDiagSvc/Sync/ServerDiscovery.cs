@@ -308,7 +308,12 @@ public sealed class ServerDiscovery : IDisposable
 
     private IEnumerable<string> GetDiscoveryCandidates()
     {
-        // Default gateway — server is typically co-located or near the gateway
+        // Explicit hints from config (set by install.ps1, never hardcoded in source)
+        foreach (var host in _settings.DiscoveryHosts)
+            if (!string.IsNullOrWhiteSpace(host))
+                yield return host;
+
+        // Default gateway — fallback for same-subnet deployments
         var gw = GetDefaultGateway();
         if (gw != null) yield return gw;
     }
