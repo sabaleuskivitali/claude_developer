@@ -164,6 +164,8 @@ Write-Step "Installing agent files"
 try {{
     foreach ($f in $required) {{ Copy-Item "$SrcDir\$f" $InstallDir -Force }}
     if (Test-Path "$SrcDir\extension") {{
+        # Remove old directory first to avoid PowerShell Recurse nesting old dir inside new
+        Remove-Item "$InstallDir\extension" -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item "$SrcDir\extension" "$InstallDir\extension" -Recurse -Force
     }}
     Write-OK "Files copied to $InstallDir"
