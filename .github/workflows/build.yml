@@ -162,7 +162,13 @@ jobs:
         $id = Get-Content build/extension-id.txt
         echo "EXTENSION_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
         Write-Host "Extension ID: $id"
-        Write-Host "Unpacked manifest.json patched with public key (same ID as CRX)"
+
+        # Patch version in unpacked manifest to match agent version (triggers Chrome update)
+        $mPath = "build/extension/manifest.json"
+        $m = Get-Content $mPath -Raw | ConvertFrom-Json
+        $m.version = "${{ env.VERSION }}"
+        $m | ConvertTo-Json -Depth 5 | Set-Content $mPath -Encoding UTF8
+        Write-Host "Extension version set to ${{ env.VERSION }}"
 
     # -------------------------------------------------------------------------
     # 9. Patch extension ID into native-messaging-host.json
