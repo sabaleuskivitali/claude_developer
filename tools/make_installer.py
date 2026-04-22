@@ -291,7 +291,7 @@ if ($isDomain) {{
 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host " BROWSER EXTENSION — ONE-TIME MANUAL STEP (2 clicks)"       -ForegroundColor Cyan
+    Write-Host " BROWSER EXTENSION - ONE-TIME MANUAL STEP"                  -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host " Chrome 133+ blocks auto-install on personal machines."
     Write-Host " Load unpacked once — persists across restarts and updates."
