@@ -4,8 +4,8 @@ services:
     container_name: diag_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-diag}
-      POSTGRES_USER: ${POSTGRES_USER:-diag}
+      POSTGRES_DB:       ${POSTGRES_DB:-diag}
+      POSTGRES_USER:     ${POSTGRES_USER:-diag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -18,6 +18,79 @@ services:
       timeout: 5s
       retries: 5
 
+  pgbouncer:
+    image: bitnami/pgbouncer:latest
+    container_name: diag_pgbouncer
+    restart: unless-stopped
+    environment:
+      POSTGRESQL_HOST:     postgres
+      POSTGRESQL_PORT:     5432
+      POSTGRESQL_DATABASE: ${POSTGRES_DB:-diag}
+      POSTGRESQL_USERNAME: ${POSTGRES_USER:-diag}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
+      PGBOUNCER_PORT:                      5432
+      PGBOUNCER_POOL_MODE:                 transaction
+      PGBOUNCER_MAX_CLIENT_CONN:           1000
+      PGBOUNCER_DEFAULT_POOL_SIZE:         20
+      PGBOUNCER_SERVER_RESET_QUERY_ALWAYS: yes
+      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    ports:
+      - "127.0.0.1:5433:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/5432'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: diag_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: diag_api
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DSN:       postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@127.0.0.1:5433/${POSTGRES_DB:-diag}
+      API_KEY:            ${API_KEY}
+      MINIO_ENDPOINT:     127.0.0.1:9000
+      MINIO_ACCESS_KEY:   ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY:   ${MINIO_SECRET_KEY}
+      PORT_RANGE_START:   ${PORT_RANGE_START:-49200}
+      PORT_RANGE_END:     ${PORT_RANGE_END:-49300}
+      UPDATE_PACKAGES_DIR: /updates
+    volumes:
+      - api_certs:/certs
+      - api_runtime:/app/runtime
+      - ${UPDATE_PACKAGES_DIR:-/home/nubes/updates}:/updates:ro
+      - /etc/avahi/services:/etc/avahi/services  # mDNS: avahi-daemon on host picks this up
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
   etl:
     build:
       context: .
@@ -25,8 +98,8 @@ services:
     container_name: diag_etl
     restart: unless-stopped
     environment:
-      POSTGRES_DSN: postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-diag}
-      SMB_SHARE_PATH: ${SMB_SHARE_PATH:-/mnt/diag}
+      POSTGRES_DSN:        postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-diag}
+      SMB_SHARE_PATH:      ${SMB_SHARE_PATH:-/mnt/diag}
       ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-60}
     volumes:
       - ${SMB_MOUNT_PATH:-/mnt/diag}:${SMB_SHARE_PATH:-/mnt/diag}:ro
@@ -38,4 +111,7 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:
+  api_certs:
+  api_runtime:
   etl_state:

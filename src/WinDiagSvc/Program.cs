@@ -54,11 +54,13 @@ builder.Services.AddHostedService<BrowserQueueImporter>();
 // Localhost CRX host — serves extension.crx for non-domain machines
 builder.Services.AddHostedService<ExtensionHostService>();
 
-// Sync and management
-builder.Services.AddHostedService<FileSyncWorker>();
+// Sync and management — HTTP API
+builder.Services.AddSingleton<ServerDiscovery>();
+builder.Services.AddSingleton<ErrorReporter>();
+builder.Services.AddHostedService<HttpSyncWorker>();
 builder.Services.AddHostedService<HeartbeatWorker>();
-builder.Services.AddHostedService<CommandPoller>();
-builder.Services.AddHostedService<UpdateManager>();
+builder.Services.AddHostedService<HttpCommandPoller>();
+builder.Services.AddHostedService<HttpUpdateManager>();
 builder.Services.AddHostedService<PerformanceMonitor>();
 
 // File logging — no console output in service mode

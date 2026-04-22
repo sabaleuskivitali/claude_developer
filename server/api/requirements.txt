@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+uvloop==0.20.0
+asyncpg==0.29.0
+python-multipart==0.0.12
+minio==7.2.9
+pydantic==2.9.0

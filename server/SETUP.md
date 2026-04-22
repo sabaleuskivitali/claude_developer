@@ -8,91 +8,124 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 newgrp docker
 
-# Samba (SMB share for clients)
-sudo apt install samba cifs-utils -y
+# avahi-daemon (mDNS — agents discover server automatically)
+sudo apt install avahi-daemon -y
+sudo systemctl enable avahi-daemon
+sudo systemctl start avahi-daemon
+
+# Allow avahi to publish custom services
+sudo mkdir -p /etc/avahi/services
 ```
 
-## 1. SMB Share
-
-```bash
-# Create share directory
-sudo mkdir -p /mnt/diag
-sudo chown -R $USER:$USER /mnt/diag
-
-# Add to /etc/samba/smb.conf
-sudo tee -a /etc/samba/smb.conf <<'EOF'
-[diag]
-   path = /mnt/diag
-   browseable = no
-   read only = no
-   valid users = svc_diag
-   create mask = 0664
-   directory mask = 0775
-EOF
-
-# Create SMB user
-sudo smbpasswd -a svc_diag
-
-sudo systemctl restart smbd
-sudo systemctl enable smbd
-```
-
-## 2. Server
+## 1. Configure and start
 
 ```bash
 cd ~/claude_developer/server
 
 cp .env.example .env
-# Edit .env: set POSTGRES_PASSWORD and ANTHROPIC_API_KEY
+# Required: POSTGRES_PASSWORD, API_KEY, MINIO_ACCESS_KEY, MINIO_SECRET_KEY
 nano .env
 
 docker compose up -d
 
-# Verify schema was applied
-docker compose exec postgres psql -U diag -d diag -c "\dt"
-```
-
-## 3. Verify
-
-```bash
-# Check containers
+# Verify all containers running
 docker compose ps
-
-# Tail ETL logs
-docker compose logs -f etl
-
-# Run manage.py (install psycopg2 locally or exec inside container)
-pip install psycopg2-binary
-POSTGRES_DSN="postgresql://diag:YOUR_PASSWORD@localhost:5432/diag" \
-SMB_SHARE_PATH=/mnt/diag \
-python manage.py status
 ```
 
-## 4. Firewall
+After `diag_api` starts, it automatically:
+- Finds a free port in 49200–49300
+- Generates a self-signed TLS cert (stored in Docker volume `api_certs`)
+- Writes `/etc/avahi/services/windiag.service` → avahi-daemon broadcasts the port via mDNS
+
+Check which port was assigned:
+```bash
+docker compose exec api cat /app/runtime/port.env
+# → PORT=49213
+```
+
+Check TLS thumbprint (needed for agent config):
+```bash
+docker compose exec api cat /certs/thumbprint.txt
+```
+
+## 2. Firewall
 
 ```bash
-# Allow SMB from LAN only
+# Allow agent connections to the dynamic port range
+sudo ufw allow from 192.168.0.0/16 to any port 49200:49300 proto tcp
+
+# mDNS (agents discover server — UDP 5353)
+sudo ufw allow from 192.168.0.0/16 to any port 5353 proto udp
+
+# SMB (legacy — keep until all agents migrated to HTTP API)
 sudo ufw allow from 192.168.0.0/16 to any port 445
 sudo ufw allow from 192.168.0.0/16 to any port 139
-# Block PostgreSQL from outside (already bound to 127.0.0.1)
+
 sudo ufw enable
+```
+
+## 3. Verify API
+
+```bash
+# Health check (get port first)
+PORT=$(docker compose exec api cat /app/runtime/port.env | cut -d= -f2)
+curl -k https://localhost:$PORT/health
+
+# Test error endpoint
+curl -k -X POST https://localhost:$PORT/api/v1/errors \
+  -H "X-Api-Key: $(grep API_KEY .env | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{"machine_id":"test","stage":"manual_test","error":"ok","ts":"2026-04-22T10:00:00Z"}'
+```
+
+## 4. OTA update packages
+
+```bash
+mkdir -p /home/nubes/updates/v1.0.31
+# Copy WinDiagSvc.zip to /home/nubes/updates/v1.0.31/
+# Write latest.json:
+cat > /home/nubes/updates/latest.json << 'EOF'
+{
+  "version": "1.0.31",
+  "released_at": "2026-04-22T00:00:00Z",
+  "package_path": "v1.0.31",
+  "sha256": "<sha256 of zip>",
+  "min_version": "1.0.0",
+  "changelog": "Replaced SMB with HTTP API"
+}
+EOF
 ```
 
 ## Daily operations
 
 ```bash
 # Machine status
-python manage.py status
+POSTGRES_DSN="postgresql://diag:PASSWORD@localhost:5432/diag" python manage.py status
 
-# Performance overview
-python manage.py perf
+# Recent install errors
+docker compose exec postgres psql -U diag -d diag \
+  -c "SELECT machine_id, stage, error, received_at FROM install_errors ORDER BY received_at DESC LIMIT 20;"
 
-# Recent errors on a machine
-python manage.py logs <machine_id> --errors --tail 30
+# Tail API logs
+docker compose logs -f api
 
-# Restart offline machines
-python manage.py restart --offline
+# Restart a machine
+PORT=$(docker compose exec api cat /app/runtime/port.env | cut -d= -f2)
+curl -k -X POST https://localhost:$PORT/api/v1/...
+```
 
-# Force ETL run now
-python manage.py etl
+## SMB (legacy, keep until migration complete)
+
+```bash
+sudo apt install samba -y
+sudo mkdir -p /home/nubes/share
+sudo tee -a /etc/samba/smb.conf <<'EOF'
+[Share]
+   path = /home/nubes/share
+   browseable = no
+   guest ok = yes
+   read only = no
+   create mask = 0664
+EOF
+sudo systemctl restart smbd
 ```

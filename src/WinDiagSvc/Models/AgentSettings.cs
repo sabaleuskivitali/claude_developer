@@ -8,13 +8,17 @@ public sealed class AgentSettings
     public string DbPath        { get; set; } = @"%ProgramData%\Microsoft\Diagnostics\events.db";
     public string ScreenshotDir { get; set; } = @"%ProgramData%\Microsoft\Diagnostics\cache";
     public string LogDir        { get; set; } = @"%ProgramData%\Microsoft\Diagnostics\logs";
-    public string SharePath     { get; set; } = @"\\server\diag";
 
-    public int SyncIntervalMinutes      { get; set; } = 60;
+    // HTTP API
+    public string ServerUrl        { get; set; } = "";  // empty = mDNS discovery
+    public string ApiKey           { get; set; } = "";
+    public string ServerThumbprint { get; set; } = "";  // SHA256 hex, filled on first connect
+
+    public int SyncIntervalSeconds       { get; set; } = 30;
     public int ScreenshotIntervalSeconds { get; set; } = 10;
-    public int DHashDistanceThreshold   { get; set; } = 10;
-    public int IdleLightThresholdMs     { get; set; } = 30_000;
-    public int IdleDeepThresholdMs      { get; set; } = 120_000;
+    public int DHashDistanceThreshold    { get; set; } = 10;
+    public int IdleLightThresholdMs      { get; set; } = 30_000;
+    public int IdleDeepThresholdMs       { get; set; } = 120_000;
 
     public string[] NtpServers         { get; set; } = ["pool.ntp.org", "time.windows.com", "time.nist.gov"];
     public int      NtpIntervalMinutes { get; set; } = 2;
@@ -29,11 +33,9 @@ public sealed class AgentSettings
 
     public CaseIdPattern[] CaseIdPatterns { get; set; } = [];
 
-    // Browser extension localhost host (non-domain machines)
     public string ExtensionId       { get; set; } = "";
     public int    ExtensionHostPort { get; set; } = 9876;
 
-    // Expand environment variables in paths
     public string ExpandedDbPath        => Environment.ExpandEnvironmentVariables(DbPath);
     public string ExpandedScreenshotDir => Environment.ExpandEnvironmentVariables(ScreenshotDir);
     public string ExpandedLogDir        => Environment.ExpandEnvironmentVariables(LogDir);
