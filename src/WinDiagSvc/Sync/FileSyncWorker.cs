@@ -103,6 +103,7 @@ public sealed class FileSyncWorker : BackgroundService
             MarkFailed();
         }
 
+        PurgeOldData();
         HeartbeatWorker.LastSyncCompletedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         WriteEvent(nameof(EventType.SyncCompleted), sentCount, failedCount);
     }
@@ -150,6 +151,52 @@ public sealed class FileSyncWorker : BackgroundService
             conn.Execute("UPDATE events SET sent=2 WHERE sent=0");
         }
         catch { }
+    }
+
+    private void PurgeOldData()
+    {
+        const int RetainDays = 7;
+        var cutoffMs = DateTimeOffset.UtcNow.AddDays(-RetainDays).ToUnixTimeMilliseconds();
+
+        try
+        {
+            var dbPath = _settings.ExpandedDbPath;
+            using var conn = new SqliteConnection($"Data Source={dbPath};Pooling=False");
+            conn.Open();
+            var deleted = conn.Execute(
+                "DELETE FROM events WHERE sent = 1 AND timestamp_utc < @Cutoff",
+                new { Cutoff = cutoffMs });
+            if (deleted > 0)
+            {
+                conn.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
+                _logger.LogInformation("Purged {N} events older than {Days} days", deleted, RetainDays);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Purge failed: {Msg}", ex.Message);
+        }
+
+        // Purge screenshot dirs older than RetainDays
+        try
+        {
+            var screenshotRoot = _settings.ExpandedScreenshotDir;
+            if (!Directory.Exists(screenshotRoot)) return;
+            var cutoffDate = DateTime.UtcNow.AddDays(-RetainDays).ToString("yyyyMMdd");
+            foreach (var dir in Directory.EnumerateDirectories(screenshotRoot))
+            {
+                var name = Path.GetFileName(dir);
+                if (string.CompareOrdinal(name, cutoffDate) < 0)
+                {
+                    Directory.Delete(dir, recursive: true);
+                    _logger.LogInformation("Purged screenshot dir {Dir}", name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Screenshot purge failed: {Msg}", ex.Message);
+        }
     }
 
     private void WriteEvent(string eventType, int sentCount, int failedCount)
