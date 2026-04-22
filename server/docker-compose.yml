@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: diag_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-diag}
+      POSTGRES_USER: ${POSTGRES_USER:-diag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-diag} -d ${POSTGRES_DB:-diag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etl:
+    build:
+      context: .
+      dockerfile: etl/Dockerfile
+    container_name: diag_etl
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-diag}
+      SMB_SHARE_PATH: ${SMB_SHARE_PATH:-/mnt/diag}
+      ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-60}
+    volumes:
+      - ${SMB_MOUNT_PATH:-/mnt/diag}:${SMB_SHARE_PATH:-/mnt/diag}:ro
+      - etl_state:/app/state
+      - ./etl:/app/etl:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  etl_state:
