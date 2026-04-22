@@ -308,7 +308,6 @@ jobs:
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         files: |
           build/Install-WinDiagSvc-${{ env.VERSION }}.zip
-          build/latest.json
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
