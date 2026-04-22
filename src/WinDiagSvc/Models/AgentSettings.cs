@@ -14,10 +14,6 @@ public sealed class AgentSettings
     public string ApiKey           { get; set; } = "";
     public string ServerThumbprint { get; set; } = "";  // SHA256 hex, filled on first connect
 
-    // Discovery hints — filled by install.ps1, not hardcoded
-    // Agent probes http://{host}:49100/discovery to get dynamic port + thumbprint
-    public string[] DiscoveryHosts { get; set; } = [];
-
     // SMB share — filled by install.ps1
     public string SharePath { get; set; } = "";
     public string ShareUser { get; set; } = "";

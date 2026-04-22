@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -13,7 +14,15 @@ namespace WinDiagSvc.Sync;
 
 /// <summary>
 /// Discovers the diag_api server URL and TLS thumbprint.
-/// Priority: mDNS (_windiag._tcp.local) → HTTP discovery (:49100) → appsettings.ServerUrl
+///
+/// Priority (L3-transparent, no IP hardcoding):
+///   1. UDP beacon      — server broadcasts to subnet every 30s (same L2 segment)
+///   2. mDNS            — _windiag._tcp.local query (same L2 segment)
+///   3. DNS SRV         — _windiag._tcp.{domain} — works across L3, IT adds one record
+///   4. DNS hostname    — windiag.{domain} → probe :49100 (fallback if no SRV)
+///   5. HTTP :49100     — probe gateway (same-subnet fallback)
+///   6. appsettings     — ServerUrl explicit override (last resort)
+///
 /// Caches the result; rediscovers when MarkUnreachable() is called.
 /// </summary>
 public sealed class ServerDiscovery : IDisposable
@@ -72,32 +81,264 @@ public sealed class ServerDiscovery : IDisposable
 
     private async Task<(string? url, string? thumbprint)> DiscoverAsync(CancellationToken ct)
     {
-        // 1. UDP beacon — cross-subnet, server broadcasts every 30s
+        // 1. UDP beacon — same L2 segment, server broadcasts every 30s
         var beacon = await UdpBeaconListenAsync(ct);
         if (beacon.HasValue)
         {
-            var url = $"https://{beacon.Value.host}:{beacon.Value.port}";
-            return (url, beacon.Value.thumbprint);
+            _logger.LogInformation("ServerDiscovery: found via UDP beacon");
+            return ($"https://{beacon.Value.host}:{beacon.Value.port}", beacon.Value.thumbprint);
         }
 
-        // 2. mDNS — same subnet, returns url + thumbprint from TXT
+        // 2. mDNS — same L2 segment
         var mdns = await MdnsQueryAsync(ct);
         if (mdns.HasValue)
         {
-            var url = $"https://{mdns.Value.host}:{mdns.Value.port}";
-            return (url, mdns.Value.thumbprint);
+            _logger.LogInformation("ServerDiscovery: found via mDNS");
+            return ($"https://{mdns.Value.host}:{mdns.Value.port}", mdns.Value.thumbprint);
         }
 
-        // 3. HTTP discovery on fixed port 49100 — when server IP is reachable via gateway
-        var httpResult = await HttpDiscoveryAsync(ct);
-        if (httpResult.HasValue)
-            return httpResult.Value;
+        // 3. DNS SRV: _windiag._tcp.{domain} — works across L3, IT adds one DNS record
+        var srv = await DnsSrvDiscoveryAsync(ct);
+        if (srv.HasValue)
+        {
+            _logger.LogInformation("ServerDiscovery: found via DNS SRV");
+            return ($"https://{srv.Value.host}:{srv.Value.port}", srv.Value.thumbprint);
+        }
 
-        // 4. appsettings.ServerUrl
+        // 4. DNS A: windiag.{domain} → probe :49100 — fallback if no SRV record
+        var dnsA = await DnsADiscoveryAsync(ct);
+        if (dnsA.HasValue)
+        {
+            _logger.LogInformation("ServerDiscovery: found via DNS A record");
+            return dnsA.Value;
+        }
+
+        // 5. HTTP :49100 on gateway — same-subnet last resort
+        var http = await HttpDiscoveryAsync(ct);
+        if (http.HasValue)
+        {
+            _logger.LogInformation("ServerDiscovery: found via HTTP gateway probe");
+            return http.Value;
+        }
+
+        // 6. Explicit ServerUrl in appsettings — manual override
         if (!string.IsNullOrEmpty(_settings.ServerUrl))
+        {
+            _logger.LogInformation("ServerDiscovery: using ServerUrl from config");
             return (_settings.ServerUrl.TrimEnd('/'), _settings.ServerThumbprint);
+        }
 
         return (null, null);
+    }
+
+    // ─── DNS SRV discovery ───────────────────────────────────────────────────
+    // IT runs once on domain DNS server:
+    //   Add-DnsServerResourceRecord -Srv -ZoneName "corp.local" `
+    //     -Name "_windiag._tcp" -DomainName "server.corp.local" -Priority 10 `
+    //     -Weight 10 -Port 49100
+    // No IP in code. No IP in agent config.
+
+    private async Task<(string host, int port, string? thumbprint)?> DnsSrvDiscoveryAsync(CancellationToken ct)
+    {
+        try
+        {
+            var domain = IPGlobalProperties.GetIPGlobalProperties().DomainName;
+            if (string.IsNullOrEmpty(domain)) return null;
+
+            var srvName = $"_windiag._tcp.{domain}";
+            _logger.LogDebug("ServerDiscovery: querying DNS SRV {Name}", srvName);
+
+            // Resolve SRV via system DNS — parse the raw DNS response
+            var addresses = await Dns.GetHostAddressesAsync(srvName, ct).ConfigureAwait(false);
+            // GetHostAddresses doesn't support SRV; use low-level UDP DNS query
+            return await QueryDnsSrvAsync(srvName, domain, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("DNS SRV discovery failed: {Msg}", ex.Message);
+            return null;
+        }
+    }
+
+    private async Task<(string host, int port, string? thumbprint)?> QueryDnsSrvAsync(
+        string srvName, string domain, CancellationToken ct)
+    {
+        try
+        {
+            // Build DNS query for SRV record
+            var dnsServers = GetDnsServers();
+            if (dnsServers.Count == 0) return null;
+
+            var query   = BuildDnsQuery(srvName, 33); // type 33 = SRV
+            var dnsEp   = new IPEndPoint(IPAddress.Parse(dnsServers[0]), 53);
+
+            using var udp = new UdpClient();
+            udp.Client.ReceiveTimeout = 2000;
+            await udp.SendAsync(query, query.Length, dnsEp).ConfigureAwait(false);
+
+            using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts2.CancelAfter(2000);
+            var result = await udp.ReceiveAsync(cts2.Token).ConfigureAwait(false);
+
+            var parsed = ParseDnsSrvResponse(result.Buffer);
+            if (parsed == null) return null;
+
+            // Now probe that host:port via HTTP discovery to get thumbprint
+            var httpResult = await ProbeHttpDiscovery(parsed.Value.host, ct);
+            if (httpResult.HasValue) return httpResult;
+
+            return (parsed.Value.host, parsed.Value.port, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("DNS SRV query failed: {Msg}", ex.Message);
+            return null;
+        }
+    }
+
+    private static (string host, int port)? ParseDnsSrvResponse(byte[] data)
+    {
+        if (data.Length < 12) return null;
+        var anCount = (data[6] << 8) | data[7];
+        var qdCount = (data[4] << 8) | data[5];
+        var pos = 12;
+
+        // Skip questions
+        for (var i = 0; i < qdCount; i++) { SkipName(data, ref pos); pos += 4; }
+
+        for (var i = 0; i < anCount && pos + 10 <= data.Length; i++)
+        {
+            SkipName(data, ref pos);
+            if (pos + 10 > data.Length) break;
+            var type  = (data[pos] << 8) | data[pos + 1];
+            var rdLen = (data[pos + 8] << 8) | data[pos + 9];
+            pos += 10;
+            if (pos + rdLen > data.Length) break;
+
+            if (type == 33 && rdLen >= 7) // SRV
+            {
+                var port = (data[pos + 4] << 8) | data[pos + 5];
+                var targetPos = pos + 6;
+                var host = ReadDnsName(data, ref targetPos);
+                if (!string.IsNullOrEmpty(host))
+                    return (host, port);
+            }
+            pos += rdLen;
+        }
+        return null;
+    }
+
+    private static string ReadDnsName(byte[] data, ref int pos)
+    {
+        var parts = new List<string>();
+        var limit = 50; // prevent infinite loops on malformed data
+        while (pos < data.Length && data[pos] != 0 && limit-- > 0)
+        {
+            if ((data[pos] & 0xC0) == 0xC0)
+            {
+                var ptr = ((data[pos] & 0x3F) << 8) | data[pos + 1];
+                pos += 2;
+                var ptrPos = ptr;
+                parts.Add(ReadDnsName(data, ref ptrPos));
+                return string.Join(".", parts);
+            }
+            var len = data[pos++];
+            if (pos + len > data.Length) break;
+            parts.Add(Encoding.ASCII.GetString(data, pos, len));
+            pos += len;
+        }
+        if (pos < data.Length && data[pos] == 0) pos++;
+        return string.Join(".", parts);
+    }
+
+    // ─── DNS A hostname discovery ────────────────────────────────────────────
+    // IT runs once: Add-DnsServerResourceRecord -A -ZoneName "corp.local"
+    //   -Name "windiag" -IPv4Address "10.8.20.150"
+    // Agent resolves windiag.{domain} → probes :49100 for port + thumbprint
+
+    private async Task<(string url, string? thumbprint)?> DnsADiscoveryAsync(CancellationToken ct)
+    {
+        try
+        {
+            var domain = IPGlobalProperties.GetIPGlobalProperties().DomainName;
+            if (string.IsNullOrEmpty(domain)) return null;
+
+            var hostname = $"windiag.{domain}";
+            _logger.LogDebug("ServerDiscovery: resolving DNS A {Host}", hostname);
+
+            var addresses = await Dns.GetHostAddressesAsync(hostname, ct).ConfigureAwait(false);
+            foreach (var addr in addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork))
+            {
+                var result = await ProbeHttpDiscovery(addr.ToString(), ct);
+                if (result.HasValue) return ($"https://{result.Value.host}:{result.Value.port}", result.Value.thumbprint);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("DNS A discovery failed: {Msg}", ex.Message);
+        }
+        return null;
+    }
+
+    // ─── Shared HTTP probe ───────────────────────────────────────────────────
+
+    private async Task<(string host, int port, string? thumbprint)?> ProbeHttpDiscovery(
+        string host, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(2000);
+            using var plain = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var json = await plain.GetStringAsync($"http://{host}:{DiscoveryPort}/discovery", cts.Token);
+            var doc  = JsonDocument.Parse(json).RootElement;
+            if (!doc.TryGetProperty("port", out var portEl)) return null;
+            var port  = portEl.GetInt32();
+            var thumb = doc.TryGetProperty("thumbprint", out var tEl) ? tEl.GetString() : null;
+            return (host, port, thumb);
+        }
+        catch { return null; }
+    }
+
+    // ─── DNS helpers ─────────────────────────────────────────────────────────
+
+    private static List<string> GetDnsServers()
+    {
+        var servers = new List<string>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                foreach (var dns in ni.GetIPProperties().DnsAddresses)
+                    if (dns.AddressFamily == AddressFamily.InterNetwork)
+                        servers.Add(dns.ToString());
+            }
+        }
+        catch { }
+        return servers;
+    }
+
+    private static byte[] BuildDnsQuery(string name, ushort type)
+    {
+        var labels    = name.Split('.');
+        var nameBytes = EncodeDnsName(labels);
+        var packet    = new byte[12 + nameBytes.Length + 4];
+        var pos       = 0;
+
+        packet[pos++] = 0x00; packet[pos++] = 0x01; // ID
+        packet[pos++] = 0x01; packet[pos++] = 0x00; // flags: recursion desired
+        packet[pos++] = 0x00; packet[pos++] = 0x01; // QDCOUNT=1
+        packet[pos++] = 0x00; packet[pos++] = 0x00;
+        packet[pos++] = 0x00; packet[pos++] = 0x00;
+        packet[pos++] = 0x00; packet[pos++] = 0x00;
+
+        Array.Copy(nameBytes, 0, packet, pos, nameBytes.Length);
+        pos += nameBytes.Length;
+
+        packet[pos++] = (byte)(type >> 8); packet[pos++] = (byte)(type & 0xFF);
+        packet[pos++] = 0x00; packet[pos]   = 0x01; // class IN
+        return packet;
     }
 
     // ─── UDP beacon ──────────────────────────────────────────────────────────
@@ -275,54 +516,25 @@ public sealed class ServerDiscovery : IDisposable
         }
     }
 
-    // ─── HTTP discovery fallback ─────────────────────────────────────────────
+    // ─── HTTP discovery on gateway — same-subnet fallback ───────────────────
 
     private async Task<(string url, string? thumbprint)?> HttpDiscoveryAsync(CancellationToken ct)
     {
-        var candidates = GetDiscoveryCandidates();
-        foreach (var host in candidates)
-        {
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(2000);
-
-                using var plainHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                var json = await plainHttp.GetStringAsync(
-                    $"http://{host}:{DiscoveryPort}/discovery", cts.Token);
-
-                var doc = JsonDocument.Parse(json).RootElement;
-                if (!doc.TryGetProperty("port", out var portEl)) continue;
-
-                var port   = portEl.GetInt32();
-                var thumb  = doc.TryGetProperty("thumbprint", out var tEl) ? tEl.GetString() : null;
-                var url    = $"https://{host}:{port}";
-
-                _logger.LogInformation("ServerDiscovery: found via HTTP discovery at {Host}", host);
-                return (url, thumb);
-            }
-            catch { }
-        }
-        return null;
-    }
-
-    private IEnumerable<string> GetDiscoveryCandidates()
-    {
-        // Explicit hints from config (set by install.ps1, never hardcoded in source)
-        foreach (var host in _settings.DiscoveryHosts)
-            if (!string.IsNullOrWhiteSpace(host))
-                yield return host;
-
-        // Default gateway — fallback for same-subnet deployments
         var gw = GetDefaultGateway();
-        if (gw != null) yield return gw;
+        if (gw == null) return null;
+
+        var result = await ProbeHttpDiscovery(gw, ct);
+        if (result.HasValue)
+            return ($"https://{result.Value.host}:{result.Value.port}", result.Value.thumbprint);
+
+        return null;
     }
 
     private static string? GetDefaultGateway()
     {
         try
         {
-            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
                 var props = ni.GetIPProperties();
                 foreach (var gw in props.GatewayAddresses)

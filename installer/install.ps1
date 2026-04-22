@@ -7,21 +7,20 @@
 #       [-SharePath \\10.8.20.150\Share] `
 #       [-ShareUser DOMAIN\user] [-SharePass password]
 #
-# -ServerHost   IP or hostname of the diag_api server (required for L3 / cross-subnet)
 # -ApiKey       API key for authenticating to diag_api  (required)
-# -SharePath    SMB share path; defaults to \\<ServerHost>\Share
-# -ShareUser    SMB credentials; leave empty for domain Integrated Auth
+# -SharePath    SMB share path (e.g. \\server\Share); leave empty for domain Integrated Auth auto-discovery
+# -ShareUser    SMB credentials; leave empty if domain (Integrated Auth)
 # -SharePass    SMB password
+#
+# Server is discovered automatically via DNS SRV (_windiag._tcp.{domain})
+# or DNS A record (windiag.{domain}). IT adds one DNS record — no IPs in installer.
 
 param(
-    [Parameter(Mandatory)][string]$ServerHost,
     [Parameter(Mandatory)][string]$ApiKey,
-    [string]$SharePath  = "",          # defaults to \\$ServerHost\Share
-    [string]$ShareUser  = "",          # leave empty if domain (Integrated Auth)
+    [string]$SharePath  = "",
+    [string]$ShareUser  = "",
     [string]$SharePass  = ""
 )
-
-if (-not $SharePath) { $SharePath = "\\$ServerHost\Share" }
 
 $ErrorActionPreference = "Stop"
 $ServiceName  = "WinDiagSvc"
@@ -63,13 +62,11 @@ Write-OK "Files copied"
 Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-$cfg.AgentSettings.SharePath      = $SharePath
-$cfg.AgentSettings.ApiKey         = $ApiKey
-$cfg.AgentSettings.DiscoveryHosts = @($ServerHost)   # agent probes http://$ServerHost:49100/discovery
+$cfg.AgentSettings.ApiKey     = $ApiKey
+if ($SharePath) { $cfg.AgentSettings.SharePath = $SharePath }
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-Write-OK "SharePath      = $SharePath"
-Write-OK "ServerHost     = $ServerHost"
-Write-OK "DiscoveryHosts = [$ServerHost]"
+Write-OK "ApiKey    = $($ApiKey.Substring(0,8))..."
+if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath — will use domain Integrated Auth" }
 
 # ---------------------------------------------------------------------------
 # 4. Defender exclusions
@@ -179,5 +176,6 @@ Write-Host " Installation complete!" -ForegroundColor Green
 Write-Host " Service  : $DisplayName ($ServiceName)"
 Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
-Write-Host " SMB share: $SharePath"
+Write-Host " SMB share: $(if ($SharePath) { $SharePath } else { 'auto (domain Integrated Auth)' })"
+Write-Host " Discovery: DNS SRV _windiag._tcp.{domain} → DNS A windiag.{domain} → mDNS → UDP beacon"
 Write-Host "========================================`n" -ForegroundColor Green
