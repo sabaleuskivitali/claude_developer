@@ -43,6 +43,8 @@ if [ ! -f /certs/server.crt ]; then
     echo "TLS cert generated. Thumbprint: $(cat /certs/thumbprint.txt)"
 fi
 
+THUMBPRINT=$(cat /certs/thumbprint.txt)
+
 # Publish via avahi (host avahi-daemon picks up files from /etc/avahi/services/)
 if [ -d /etc/avahi/services ]; then
     cat > /etc/avahi/services/windiag.service << AVAHI_XML
@@ -54,11 +56,43 @@ if [ -d /etc/avahi/services ]; then
     <type>_windiag._tcp</type>
     <port>${PORT}</port>
     <txt-record>version=2</txt-record>
+    <txt-record>thumbprint=${THUMBPRINT}</txt-record>
+    <txt-record>discovery=49100</txt-record>
   </service>
 </service-group>
 AVAHI_XML
-    echo "mDNS: published _windiag._tcp on port $PORT"
+    echo "mDNS: published _windiag._tcp on port $PORT thumbprint=$THUMBPRINT"
 fi
+
+# Plain HTTP discovery server on fixed port 49100 (no TLS, no auth)
+# Agents in other subnets can query http://<server-ip>:49100/discovery
+python3 - << PYEOF &
+import http.server, json, os, sys
+
+class DiscoveryHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ('/', '/discovery'):
+            data = json.dumps({
+                'port':        int(os.environ['PORT']),
+                'thumbprint':  open('/certs/thumbprint.txt').read().strip(),
+                'version':     2,
+            }).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *a): pass
+
+try:
+    http.server.HTTPServer(('0.0.0.0', 49100), DiscoveryHandler).serve_forever()
+except Exception as e:
+    print(f'Discovery server error: {e}', file=sys.stderr)
+PYEOF
+echo "Discovery: HTTP server started on port 49100"
 
 exec uvicorn main:app \
     --host 0.0.0.0 \

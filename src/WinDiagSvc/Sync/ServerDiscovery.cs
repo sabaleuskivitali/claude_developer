@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WinDiagSvc.Models;
@@ -11,10 +12,9 @@ using WinDiagSvc.Models;
 namespace WinDiagSvc.Sync;
 
 /// <summary>
-/// Discovers the diag_api server URL.
-/// Priority: mDNS (_windiag._tcp.local) → ENV:WINDIAG_SERVER_URL → appsettings.ServerUrl
+/// Discovers the diag_api server URL and TLS thumbprint.
+/// Priority: mDNS (_windiag._tcp.local) → HTTP discovery (:49100) → appsettings.ServerUrl
 /// Caches the result; rediscovers when MarkUnreachable() is called.
-/// Exposes a shared HttpClient with self-signed cert support and optional thumbprint pinning.
 /// </summary>
 public sealed class ServerDiscovery : IDisposable
 {
@@ -23,12 +23,14 @@ public sealed class ServerDiscovery : IDisposable
     private readonly HttpClient _http;
 
     private string? _cachedUrl;
+    private string? _cachedThumbprint;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private DateTime _nextRediscovery = DateTime.MinValue;
 
-    private const string MdnsService = "_windiag._tcp.local";
-    private const string MdnsGroup   = "224.0.0.251";
-    private const int    MdnsPort    = 5353;
+    private const string MdnsService  = "_windiag._tcp.local";
+    private const string MdnsGroup    = "224.0.0.251";
+    private const int    MdnsPort     = 5353;
+    private const int    DiscoveryPort = 49100;
 
     public ServerDiscovery(IOptions<AgentSettings> options, ILogger<ServerDiscovery> logger)
     {
@@ -47,7 +49,7 @@ public sealed class ServerDiscovery : IDisposable
             if (_cachedUrl != null && DateTime.UtcNow < _nextRediscovery)
                 return _cachedUrl;
 
-            _cachedUrl = await DiscoverAsync(ct);
+            (_cachedUrl, _cachedThumbprint) = await DiscoverAsync(ct);
             _nextRediscovery = DateTime.UtcNow.AddMinutes(60);
 
             if (_cachedUrl != null)
@@ -62,32 +64,36 @@ public sealed class ServerDiscovery : IDisposable
 
     public void MarkUnreachable()
     {
-        _cachedUrl = null;
-        _nextRediscovery = DateTime.MinValue;
+        _cachedUrl        = null;
+        _cachedThumbprint = null;
+        _nextRediscovery  = DateTime.MinValue;
     }
 
-    private async Task<string?> DiscoverAsync(CancellationToken ct)
+    private async Task<(string? url, string? thumbprint)> DiscoverAsync(CancellationToken ct)
     {
-        // 1. mDNS
+        // 1. mDNS — same subnet, returns url + thumbprint from TXT
         var mdns = await MdnsQueryAsync(ct);
         if (mdns.HasValue)
-            return $"https://{mdns.Value.host}:{mdns.Value.port}";
+        {
+            var url = $"https://{mdns.Value.host}:{mdns.Value.port}";
+            return (url, mdns.Value.thumbprint);
+        }
 
-        // 2. Environment variable
-        var envUrl = Environment.GetEnvironmentVariable("WINDIAG_SERVER_URL");
-        if (!string.IsNullOrEmpty(envUrl))
-            return envUrl.TrimEnd('/');
+        // 2. HTTP discovery on fixed port 49100 — cross-subnet when server IP is known via DNS
+        var httpResult = await HttpDiscoveryAsync(ct);
+        if (httpResult.HasValue)
+            return httpResult.Value;
 
-        // 3. appsettings
+        // 3. appsettings.ServerUrl
         if (!string.IsNullOrEmpty(_settings.ServerUrl))
-            return _settings.ServerUrl.TrimEnd('/');
+            return (_settings.ServerUrl.TrimEnd('/'), _settings.ServerThumbprint);
 
-        return null;
+        return (null, null);
     }
 
     // ─── mDNS ────────────────────────────────────────────────────────────────
 
-    private async Task<(string host, int port)?> MdnsQueryAsync(CancellationToken ct)
+    private async Task<(string host, int port, string? thumbprint)?> MdnsQueryAsync(CancellationToken ct)
     {
         try
         {
@@ -96,8 +102,8 @@ public sealed class ServerDiscovery : IDisposable
             udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
 
-            var query   = BuildPtrQuery(MdnsService);
-            var target  = new IPEndPoint(IPAddress.Parse(MdnsGroup), MdnsPort);
+            var query  = BuildPtrQuery(MdnsService);
+            var target = new IPEndPoint(IPAddress.Parse(MdnsGroup), MdnsPort);
             await udp.SendAsync(query, query.Length, target);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -128,7 +134,6 @@ public sealed class ServerDiscovery : IDisposable
         var packet    = new byte[12 + nameBytes.Length + 4];
         var pos       = 0;
 
-        // Header: ID=1, FLAGS=0 (standard query), QDCOUNT=1
         packet[pos++] = 0x00; packet[pos++] = 0x01;
         packet[pos++] = 0x00; packet[pos++] = 0x00;
         packet[pos++] = 0x00; packet[pos++] = 0x01;
@@ -139,8 +144,8 @@ public sealed class ServerDiscovery : IDisposable
         Array.Copy(nameBytes, 0, packet, pos, nameBytes.Length);
         pos += nameBytes.Length;
 
-        packet[pos++] = 0x00; packet[pos++] = 0x0C; // QTYPE = PTR
-        packet[pos++] = 0x00; packet[pos++] = 0x01; // QCLASS = IN
+        packet[pos++] = 0x00; packet[pos++] = 0x0C; // PTR
+        packet[pos++] = 0x00; packet[pos++] = 0x01; // IN
         return packet;
     }
 
@@ -156,7 +161,7 @@ public sealed class ServerDiscovery : IDisposable
         return [.. bytes];
     }
 
-    private static (string host, int port)? ParseMdnsResponse(byte[] data, string senderIp)
+    private static (string host, int port, string? thumbprint)? ParseMdnsResponse(byte[] data, string senderIp)
     {
         if (data.Length < 12) return null;
 
@@ -164,17 +169,13 @@ public sealed class ServerDiscovery : IDisposable
         var nsCount = (data[8] << 8) | data[9];
         var arCount = (data[10] << 8) | data[11];
         var qdCount = (data[4] << 8) | data[5];
+        var pos     = 12;
 
-        var pos = 12;
+        for (var i = 0; i < qdCount; i++) { SkipName(data, ref pos); pos += 4; }
 
-        for (var i = 0; i < qdCount; i++)
-        {
-            SkipName(data, ref pos);
-            pos += 4;
-        }
-
-        int?   port   = null;
-        string? ip    = null;
+        int?    port       = null;
+        string? ip         = null;
+        string? thumbprint = null;
 
         var totalRR = anCount + nsCount + arCount;
         for (var i = 0; i < totalRR && pos + 10 <= data.Length; i++)
@@ -190,15 +191,33 @@ public sealed class ServerDiscovery : IDisposable
 
             if (type == 33 && rdLen >= 7) // SRV
                 port = (data[pos + 4] << 8) | data[pos + 5];
-            else if (type == 1 && rdLen == 4) // A record
+            else if (type == 1 && rdLen == 4) // A
                 ip = $"{data[pos]}.{data[pos+1]}.{data[pos+2]}.{data[pos+3]}";
+            else if (type == 16) // TXT
+                thumbprint = ParseTxtThumbprint(data, pos, rdLen) ?? thumbprint;
 
             pos += rdLen;
         }
 
         if (port.HasValue)
-            return (ip ?? senderIp, port.Value);
+            return (ip ?? senderIp, port.Value, thumbprint);
 
+        return null;
+    }
+
+    private static string? ParseTxtThumbprint(byte[] data, int offset, int rdLen)
+    {
+        var end = offset + rdLen;
+        var pos = offset;
+        while (pos < end)
+        {
+            var len = data[pos++];
+            if (pos + len > end) break;
+            var kv = Encoding.UTF8.GetString(data, pos, len);
+            if (kv.StartsWith("thumbprint=", StringComparison.OrdinalIgnoreCase))
+                return kv["thumbprint=".Length..];
+            pos += len;
+        }
         return null;
     }
 
@@ -212,7 +231,61 @@ public sealed class ServerDiscovery : IDisposable
         }
     }
 
-    // ─── HttpClient ──────────────────────────────────────────────────────────
+    // ─── HTTP discovery fallback ─────────────────────────────────────────────
+
+    private async Task<(string url, string? thumbprint)?> HttpDiscoveryAsync(CancellationToken ct)
+    {
+        var candidates = GetDiscoveryCandidates();
+        foreach (var host in candidates)
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(2000);
+
+                using var plainHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+                var json = await plainHttp.GetStringAsync(
+                    $"http://{host}:{DiscoveryPort}/discovery", cts.Token);
+
+                var doc = JsonDocument.Parse(json).RootElement;
+                if (!doc.TryGetProperty("port", out var portEl)) continue;
+
+                var port   = portEl.GetInt32();
+                var thumb  = doc.TryGetProperty("thumbprint", out var tEl) ? tEl.GetString() : null;
+                var url    = $"https://{host}:{port}";
+
+                _logger.LogInformation("ServerDiscovery: found via HTTP discovery at {Host}", host);
+                return (url, thumb);
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private IEnumerable<string> GetDiscoveryCandidates()
+    {
+        // Default gateway — server is typically co-located or near the gateway
+        var gw = GetDefaultGateway();
+        if (gw != null) yield return gw;
+    }
+
+    private static string? GetDefaultGateway()
+    {
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                var props = ni.GetIPProperties();
+                foreach (var gw in props.GatewayAddresses)
+                    if (gw.Address.AddressFamily == AddressFamily.InterNetwork)
+                        return gw.Address.ToString();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    // ─── HttpClient (TLS pinning) ────────────────────────────────────────────
 
     private HttpClient CreateHttpClient()
     {
@@ -231,13 +304,13 @@ public sealed class ServerDiscovery : IDisposable
     {
         if (cert is null) return false;
 
-        var thumbprint = _settings.ServerThumbprint;
-        if (string.IsNullOrEmpty(thumbprint)) return true; // not yet pinned — allow first connect
+        // Use thumbprint discovered at runtime if not in settings
+        var expected = _cachedThumbprint ?? _settings.ServerThumbprint;
+        if (string.IsNullOrEmpty(expected)) return true; // not yet pinned — allow first connect
 
         var actual = Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()))
             .Replace(":", "").ToUpperInvariant();
-        var expected = thumbprint.Replace(":", "").ToUpperInvariant();
-        return actual == expected;
+        return actual == expected.Replace(":", "").ToUpperInvariant();
     }
 
     public void Dispose()
