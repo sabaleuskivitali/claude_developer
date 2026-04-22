@@ -1,4 +1,6 @@
+using System.Net.Http;
 using System.Net.Http.Json;
+using WinDiagSvc.Management;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
@@ -83,12 +85,12 @@ public sealed class HttpSyncWorker : BackgroundService
             var ok = await PostEventBatchAsync(url, events, ct);
             if (ok)
             {
-                MarkSent(events.Select(e => e.EventId).ToList(), 1);
+                MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 1);
                 sent += events.Count;
             }
             else
             {
-                MarkSent(events.Select(e => e.EventId).ToList(), 2);
+                MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 2);
                 failed += events.Count;
                 _discovery.MarkUnreachable();
                 break;
