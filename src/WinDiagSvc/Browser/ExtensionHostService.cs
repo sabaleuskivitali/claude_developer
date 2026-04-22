@@ -28,6 +28,20 @@ public sealed class ExtensionHostService : BackgroundService
         _logger   = logger;
     }
 
+    private static string ReadExtensionVersion(string installDir)
+    {
+        try
+        {
+            var path = Path.Combine(installDir, "extension", "manifest.json");
+            if (!File.Exists(path)) return "1.0.0";
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("version", out var v))
+                return v.GetString() ?? "1.0.0";
+        }
+        catch { }
+        return "1.0.0";
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var installDir = Path.GetDirectoryName(Environment.ProcessPath)!;
@@ -62,6 +76,9 @@ public sealed class ExtensionHostService : BackgroundService
 
         _logger.LogInformation("ExtensionHostService: serving extension on http://localhost:{Port}/", port);
 
+        var extVersion = ReadExtensionVersion(installDir);
+        _logger.LogInformation("ExtensionHostService: extension version {Ver}", extVersion);
+
         while (!ct.IsCancellationRequested)
         {
             HttpListenerContext ctx;
@@ -76,13 +93,13 @@ public sealed class ExtensionHostService : BackgroundService
                 continue;
             }
 
-            _ = Task.Run(() => HandleRequest(ctx, crxPath, extId, port), CancellationToken.None);
+            _ = Task.Run(() => HandleRequest(ctx, crxPath, extId, port, extVersion), CancellationToken.None);
         }
 
         try { listener.Stop(); } catch { /* ignore */ }
     }
 
-    private void HandleRequest(HttpListenerContext ctx, string crxPath, string extId, int port)
+    private void HandleRequest(HttpListenerContext ctx, string crxPath, string extId, int port, string extVersion)
     {
         try
         {
@@ -95,7 +112,7 @@ public sealed class ExtensionHostService : BackgroundService
                     <?xml version='1.0' encoding='UTF-8'?>
                     <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
                       <app appid='{extId}'>
-                        <updatecheck codebase='http://localhost:{port}/extension.crx' version='1.0.0' />
+                        <updatecheck codebase='http://localhost:{port}/extension.crx' version='{extVersion}' />
                       </app>
                     </gupdate>
                     """;

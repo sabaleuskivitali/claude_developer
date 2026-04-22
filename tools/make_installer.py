@@ -257,27 +257,60 @@ try {{
 }}
 
 # ---------------------------------------------------------------------------
-# 7. Extension force-install via GPO registry
+# 7. Extension force-install — HKLM policy (domain/managed) + HKCU (non-domain)
 # ---------------------------------------------------------------------------
 Write-Step "Force-installing browser extension"
-try {{
-    $ExtHostPort = 9876
-    $extEntry    = "$ExtensionId;http://localhost:$ExtHostPort/update_manifest.xml"
-    foreach ($pol in @(
-        "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
-        "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
-    )) {{
+$ExtHostPort = 9876
+$extEntry    = "$ExtensionId;http://localhost:$ExtHostPort/update_manifest.xml"
+
+# HKLM policy — works on domain/managed machines
+foreach ($pol in @(
+    "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+)) {{
+    try {{
         New-Item -Force -Path $pol | Out-Null
         $existing = (Get-ItemProperty -Path $pol -EA SilentlyContinue).PSObject.Properties |
                     Where-Object {{ $_.Name -match '^\d+$' }} | ForEach-Object {{ [int]$_.Name }}
         $nextKey  = if ($existing) {{ ($existing | Measure-Object -Maximum).Maximum + 1 }} else {{ 1 }}
         Set-ItemProperty -Path $pol -Name "$nextKey" -Value $extEntry
+        Write-OK "Policy set: $pol"
+    }} catch {{
+        Write-Warn "HKLM policy skipped ($pol): $_"
     }}
-    Write-OK "Extension force-list updated (ID: $ExtensionId)"
-}} catch {{
-    Send-InstallError "extension_policy" "$_"
-    Write-Warn "Extension policy failed: $_"
 }}
+
+# HKCU policy — works on non-domain/personal machines (Chrome < 133)
+foreach ($pol in @(
+    "HKCU:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
+    "HKCU:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+)) {{
+    try {{
+        New-Item -Force -Path $pol | Out-Null
+        $existing = (Get-ItemProperty -Path $pol -EA SilentlyContinue).PSObject.Properties |
+                    Where-Object {{ $_.Name -match '^\d+$' }} | ForEach-Object {{ [int]$_.Name }}
+        $nextKey  = if ($existing) {{ ($existing | Measure-Object -Maximum).Maximum + 1 }} else {{ 1 }}
+        Set-ItemProperty -Path $pol -Name "$nextKey" -Value $extEntry
+        Write-OK "Policy set: $pol"
+    }} catch {{
+        Write-Warn "HKCU policy skipped ($pol): $_"
+    }}
+}}
+
+# External Extensions registry — separate from policies, works on non-managed Chrome
+foreach ($extReg in @(
+    "HKCU:\SOFTWARE\Google\Chrome\Extensions\$ExtensionId",
+    "HKCU:\SOFTWARE\Microsoft\Edge\Extensions\$ExtensionId"
+)) {{
+    try {{
+        New-Item -Force -Path $extReg | Out-Null
+        Set-ItemProperty -Path $extReg -Name "update_url" -Value "http://localhost:$ExtHostPort/update_manifest.xml"
+        Write-OK "External extension registered: $extReg"
+    }} catch {{
+        Write-Warn "External extension registry skipped ($extReg): $_"
+    }}
+}}
+Write-OK "Extension auto-install configured (ID: $ExtensionId)"
 
 # ---------------------------------------------------------------------------
 # 8. Start agent
@@ -309,19 +342,8 @@ Write-Host " Server  : $(if ($ServerUrl) {{ $ServerUrl }} else {{ 'auto (mDNS)' 
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
-$isDomain = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
-if ($isDomain) {{
-    Write-Host "Domain machine: extension installs automatically via policy." -ForegroundColor Green
-    Write-Host "Restart Chrome to apply." -ForegroundColor Green
-}} else {{
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host " BROWSER EXTENSION - MANUAL STEP"       -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host " 1. Open Chrome  2. chrome://extensions"
-    Write-Host " 3. Developer mode ON  4. Load unpacked"
-    Write-Host " 5. Folder: $InstallDir\extension"      -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Yellow
-}}
+Write-Host "Restart Chrome to apply extension." -ForegroundColor Green
+Write-Host "(Extension auto-installs on next Chrome startup)" -ForegroundColor Green
 '''
 
 
