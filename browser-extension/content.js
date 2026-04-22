@@ -19,7 +19,15 @@ function sanitizeUrl(url) {
 }
 
 function send(msg) {
-  chrome.runtime.sendMessage(msg).catch(() => {});
+  // Guard against invalidated extension context (page opened before extension loaded/reloaded).
+  // chrome.runtime.id is undefined when the context is invalidated — accessing sendMessage
+  // on undefined throws TypeError. Catch everything so the page is never affected.
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime?.id) return;
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch {
+    // Extension context invalidated — ignore silently
+  }
 }
 
 function elementInfo(el) {
