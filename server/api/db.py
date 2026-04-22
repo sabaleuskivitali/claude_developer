@@ -62,9 +62,15 @@ MIGRATIONS = [
         error       TEXT
     );
     """,
-    # Views — re-applied on every startup (CREATE OR REPLACE is idempotent)
+    # Views — DROP + CREATE so column changes always apply cleanly
     """
-    CREATE OR REPLACE VIEW heartbeat_drift AS
+    DROP VIEW IF EXISTS events_corrected CASCADE;
+    DROP VIEW IF EXISTS heartbeat_drift CASCADE;
+    DROP VIEW IF EXISTS agent_performance CASCADE;
+    DROP VIEW IF EXISTS machine_status CASCADE;
+    DROP VIEW IF EXISTS task_log_correlation CASCADE;
+
+    CREATE VIEW heartbeat_drift AS
     SELECT
         session_id,
         synced_ts AS hb_ts,
@@ -73,9 +79,8 @@ MIGRATIONS = [
         LEAD(synced_ts) OVER (PARTITION BY session_id ORDER BY synced_ts) AS next_hb_ts
     FROM events
     WHERE event_type = 'HeartbeatPulse';
-    """,
-    """
-    CREATE OR REPLACE VIEW events_corrected AS
+
+    CREATE VIEW events_corrected AS
     SELECT
         e.*,
         e.synced_ts + COALESCE(
@@ -89,9 +94,8 @@ MIGRATIONS = [
         WHERE h.session_id = e.session_id AND h.hb_ts <= e.synced_ts
         ORDER BY h.hb_ts DESC LIMIT 1
     ) h ON true;
-    """,
-    """
-    CREATE OR REPLACE VIEW machine_status AS
+
+    CREATE VIEW machine_status AS
     WITH last_hb AS (
         SELECT DISTINCT ON (machine_id)
             machine_id,
@@ -114,22 +118,21 @@ MIGRATIONS = [
             ELSE 'offline'
         END AS status
     FROM last_hb;
-    """,
-    """
-    CREATE OR REPLACE VIEW agent_performance AS
+
+    CREATE VIEW agent_performance AS
     SELECT
         machine_id,
         synced_ts AS snapshot_ts,
-        (payload->>'agent_version')             AS version,
-        (payload->>'process_cpu_pct')::FLOAT    AS cpu_pct,
-        (payload->>'process_ram_mb')::FLOAT     AS ram_mb,
-        (payload->>'sqlite_size_mb')::FLOAT     AS db_mb,
+        (payload->>'agent_version')              AS version,
+        (payload->>'process_cpu_pct')::FLOAT     AS cpu_pct,
+        (payload->>'process_ram_mb')::FLOAT      AS ram_mb,
+        (payload->>'sqlite_size_mb')::FLOAT      AS db_mb,
         (payload->>'screenshots_size_mb')::FLOAT AS screenshots_mb,
-        (payload->>'events_pending')::INT       AS pending,
-        (payload->>'events_failed')::INT        AS failed,
-        (payload->>'events_rate_per_min')::INT  AS rate_per_min,
-        (payload->>'ntp_drift_ms')::INT         AS drift_ms,
-        payload->'layer_stats'                  AS layer_stats
+        (payload->>'events_pending')::INT        AS pending,
+        (payload->>'events_failed')::INT         AS failed,
+        (payload->>'events_rate_per_min')::INT   AS rate_per_min,
+        (payload->>'ntp_drift_ms')::INT          AS drift_ms,
+        payload->'layer_stats'                   AS layer_stats
     FROM events
     WHERE event_type = 'PerformanceSnapshot'
     ORDER BY synced_ts DESC;
