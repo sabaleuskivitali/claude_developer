@@ -4,7 +4,7 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 import db, storage
-from routers import events, errors, heartbeat, commands, screenshots, updates, agents
+from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl
 
 
 @asynccontextmanager
@@ -27,6 +27,7 @@ app.include_router(commands.router)
 app.include_router(screenshots.router)
 app.include_router(updates.router)
 app.include_router(agents.router)
+app.include_router(etl.router)
 
 
 @app.get("/health")
@@ -71,21 +72,48 @@ async def health(request: Request):
     except Exception:
         pass
 
-    # Buffered (unsent) events in DB
+    # Vision backlog + stale agents (online but not syncing)
     try:
         async with request.app.state.db.acquire() as conn:
-            buffered = await conn.fetchval(
+            vision_backlog = await conn.fetchval(
                 "SELECT COUNT(*) FROM events WHERE vision_done = FALSE AND layer = 'visual'"
             )
-            old_unsent = await conn.fetchval(
-                """SELECT COUNT(*) FROM events
-                   WHERE loaded_at < NOW() - INTERVAL '2 hours'
-                   AND event_type = 'HeartbeatPulse'"""
+            stale = await conn.fetch(
+                """SELECT machine_id, MAX((payload->>'events_buffered')::INT) AS buffered
+                   FROM events
+                   WHERE event_type = 'HeartbeatPulse'
+                     AND loaded_at > NOW() - INTERVAL '15 minutes'
+                   GROUP BY machine_id
+                   HAVING MAX((payload->>'events_buffered')::INT) > 1000"""
             )
-        checks["vision_backlog"] = buffered
-        if old_unsent and old_unsent > 0:
-            checks["stale_agents"] = int(old_unsent)
+        checks["vision_backlog"] = int(vision_backlog)
+        if stale:
+            checks["stale_agents"] = [
+                {"machine_id": r["machine_id"], "buffered": r["buffered"]} for r in stale
+            ]
             status = "degraded"
+    except Exception:
+        pass
+
+    # ETL last run
+    try:
+        async with request.app.state.db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT run_at, files, rows, duration_ms, error FROM etl_status ORDER BY id DESC LIMIT 1"
+            )
+        if row:
+            checks["etl_last_run"] = {
+                "run_at":      row["run_at"].isoformat(),
+                "files":       row["files"],
+                "rows":        row["rows"],
+                "duration_ms": row["duration_ms"],
+                "error":       row["error"],
+            }
+            if row["error"]:
+                checks["etl_last_run"]["status"] = "error"
+                status = "degraded"
+            else:
+                checks["etl_last_run"]["status"] = "ok"
     except Exception:
         pass
 

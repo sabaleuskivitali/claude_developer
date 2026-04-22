@@ -27,10 +27,11 @@ public sealed class ServerDiscovery : IDisposable
     private readonly SemaphoreSlim _lock = new(1, 1);
     private DateTime _nextRediscovery = DateTime.MinValue;
 
-    private const string MdnsService  = "_windiag._tcp.local";
-    private const string MdnsGroup    = "224.0.0.251";
-    private const int    MdnsPort     = 5353;
+    private const string MdnsService   = "_windiag._tcp.local";
+    private const string MdnsGroup     = "224.0.0.251";
+    private const int    MdnsPort      = 5353;
     private const int    DiscoveryPort = 49100;
+    private const int    BeaconPort    = 49101;
 
     public ServerDiscovery(IOptions<AgentSettings> options, ILogger<ServerDiscovery> logger)
     {
@@ -71,7 +72,15 @@ public sealed class ServerDiscovery : IDisposable
 
     private async Task<(string? url, string? thumbprint)> DiscoverAsync(CancellationToken ct)
     {
-        // 1. mDNS — same subnet, returns url + thumbprint from TXT
+        // 1. UDP beacon — cross-subnet, server broadcasts every 30s
+        var beacon = await UdpBeaconListenAsync(ct);
+        if (beacon.HasValue)
+        {
+            var url = $"https://{beacon.Value.host}:{beacon.Value.port}";
+            return (url, beacon.Value.thumbprint);
+        }
+
+        // 2. mDNS — same subnet, returns url + thumbprint from TXT
         var mdns = await MdnsQueryAsync(ct);
         if (mdns.HasValue)
         {
@@ -79,16 +88,51 @@ public sealed class ServerDiscovery : IDisposable
             return (url, mdns.Value.thumbprint);
         }
 
-        // 2. HTTP discovery on fixed port 49100 — cross-subnet when server IP is known via DNS
+        // 3. HTTP discovery on fixed port 49100 — when server IP is reachable via gateway
         var httpResult = await HttpDiscoveryAsync(ct);
         if (httpResult.HasValue)
             return httpResult.Value;
 
-        // 3. appsettings.ServerUrl
+        // 4. appsettings.ServerUrl
         if (!string.IsNullOrEmpty(_settings.ServerUrl))
             return (_settings.ServerUrl.TrimEnd('/'), _settings.ServerThumbprint);
 
         return (null, null);
+    }
+
+    // ─── UDP beacon ──────────────────────────────────────────────────────────
+
+    private async Task<(string host, int port, string? thumbprint)?> UdpBeaconListenAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var udp = new UdpClient();
+            udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udp.Client.Bind(new IPEndPoint(IPAddress.Any, BeaconPort));
+            udp.Client.ReceiveTimeout = 3000;
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(3000);
+
+            var result = await udp.ReceiveAsync(cts.Token);
+            var json   = System.Text.Encoding.UTF8.GetString(result.Buffer);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("port", out var portEl)) return null;
+
+            var port   = portEl.GetInt32();
+            var thumb  = root.TryGetProperty("thumbprint", out var tEl) ? tEl.GetString() : null;
+            var host   = result.RemoteEndPoint.Address.ToString();
+
+            _logger.LogInformation("ServerDiscovery: found via UDP beacon from {Host}:{Port}", host, port);
+            return (host, port, thumb);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("UDP beacon listen: {Msg}", ex.Message);
+        }
+        return null;
     }
 
     // ─── mDNS ────────────────────────────────────────────────────────────────

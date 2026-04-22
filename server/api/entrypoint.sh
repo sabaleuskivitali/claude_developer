@@ -94,6 +94,26 @@ except Exception as e:
 PYEOF
 echo "Discovery: HTTP server started on port 49100"
 
+# UDP beacon: broadcast server presence every 30s for cross-subnet agents
+python3 - << PYEOF &
+import socket, json, time, os, sys
+
+PORT       = int(os.environ['PORT'])
+THUMBPRINT = open('/certs/thumbprint.txt').read().strip()
+BEACON_PORT = 49101
+payload = json.dumps({'port': PORT, 'thumbprint': THUMBPRINT, 'version': 2}).encode()
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+while True:
+    try:
+        sock.sendto(payload, ('255.255.255.255', BEACON_PORT))
+    except Exception as e:
+        print(f'UDP beacon error: {e}', file=sys.stderr)
+    time.sleep(30)
+PYEOF
+echo "Discovery: UDP beacon started on port 49101 (broadcast every 30s)"
+
 exec uvicorn main:app \
     --host 0.0.0.0 \
     --port "$PORT" \

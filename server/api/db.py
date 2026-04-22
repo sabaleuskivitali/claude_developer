@@ -35,6 +35,8 @@ MIGRATIONS = [
         status      TEXT DEFAULT 'pending',
         message     TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_commands_pending ON commands (machine_id, issued_at)
+        WHERE status = 'pending';
     """,
     """
     CREATE TABLE IF NOT EXISTS install_errors (
@@ -48,6 +50,89 @@ MIGRATIONS = [
         received_at   TIMESTAMPTZ DEFAULT NOW(),
         payload       JSONB
     );
+    CREATE INDEX IF NOT EXISTS idx_install_errors_machine ON install_errors (machine_id, received_at DESC);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS etl_status (
+        id          BIGSERIAL PRIMARY KEY,
+        run_at      TIMESTAMPTZ DEFAULT NOW(),
+        files       INTEGER NOT NULL DEFAULT 0,
+        rows        INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        error       TEXT
+    );
+    """,
+    # Views — re-applied on every startup (CREATE OR REPLACE is idempotent)
+    """
+    CREATE OR REPLACE VIEW heartbeat_drift AS
+    SELECT
+        session_id,
+        synced_ts AS hb_ts,
+        drift_ms,
+        drift_rate_ppm,
+        LEAD(synced_ts) OVER (PARTITION BY session_id ORDER BY synced_ts) AS next_hb_ts
+    FROM events
+    WHERE event_type = 'HeartbeatPulse';
+    """,
+    """
+    CREATE OR REPLACE VIEW events_corrected AS
+    SELECT
+        e.*,
+        e.synced_ts + COALESCE(
+            (h.drift_ms + (h.drift_rate_ppm * (e.synced_ts - h.hb_ts) / 1000000.0))::BIGINT,
+            e.drift_ms
+        ) AS server_ts
+    FROM events e
+    LEFT JOIN LATERAL (
+        SELECT drift_ms, drift_rate_ppm, hb_ts
+        FROM heartbeat_drift h
+        WHERE h.session_id = e.session_id AND h.hb_ts <= e.synced_ts
+        ORDER BY h.hb_ts DESC LIMIT 1
+    ) h ON true;
+    """,
+    """
+    CREATE OR REPLACE VIEW machine_status AS
+    WITH last_hb AS (
+        SELECT DISTINCT ON (machine_id)
+            machine_id,
+            synced_ts AS last_hb_ts,
+            NOW() - TO_TIMESTAMP(synced_ts / 1000.0) AS since,
+            (payload->>'events_buffered')::INT AS buffered,
+            (payload->>'drift_ms')::INT        AS drift_ms,
+            (payload->>'ntp_server_used')      AS ntp_server
+        FROM events
+        WHERE event_type = 'HeartbeatPulse'
+        ORDER BY machine_id, synced_ts DESC
+    )
+    SELECT
+        machine_id, last_hb_ts,
+        EXTRACT(EPOCH FROM since)::INT AS lag_seconds,
+        buffered, drift_ms, ntp_server,
+        CASE
+            WHEN since < INTERVAL '2 minutes'  THEN 'online'
+            WHEN since < INTERVAL '15 minutes' THEN 'warning'
+            ELSE 'offline'
+        END AS status
+    FROM last_hb;
+    """,
+    """
+    CREATE OR REPLACE VIEW agent_performance AS
+    SELECT
+        machine_id,
+        synced_ts AS snapshot_ts,
+        (payload->>'agent_version')             AS version,
+        (payload->>'process_cpu_pct')::FLOAT    AS cpu_pct,
+        (payload->>'process_ram_mb')::FLOAT     AS ram_mb,
+        (payload->>'sqlite_size_mb')::FLOAT     AS db_mb,
+        (payload->>'screenshots_size_mb')::FLOAT AS screenshots_mb,
+        (payload->>'events_pending')::INT       AS pending,
+        (payload->>'events_failed')::INT        AS failed,
+        (payload->>'events_rate_per_min')::INT  AS rate_per_min,
+        (payload->>'ntp_drift_ms')::INT         AS drift_ms,
+        payload->'layer_stats'                  AS layer_stats
+    FROM events
+    WHERE event_type = 'PerformanceSnapshot'
+    ORDER BY synced_ts DESC;
     """,
 ]
 

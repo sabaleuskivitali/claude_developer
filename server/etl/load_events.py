@@ -127,34 +127,58 @@ def load_sqlite_file(db_path: pathlib.Path, pg_conn) -> int:
     return rows_inserted
 
 
+def record_etl_run(pg_conn, files: int, rows: int, duration_ms: int, error: str | None) -> None:
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO etl_status (files, rows, duration_ms, error) VALUES (%s, %s, %s, %s)",
+            (files, rows, duration_ms, error),
+        )
+    pg_conn.commit()
+
+
 def run() -> None:
+    t_start = time.time()
     state = load_state()
     db_files = find_db_files()
-    if not db_files:
-        log.info("No closed-day SQLite files found under %s", SHARE_PATH)
-        return
 
     pg_conn = psycopg2.connect(POSTGRES_DSN)
+
+    if not db_files:
+        log.info("No closed-day SQLite files found under %s", SHARE_PATH)
+        record_etl_run(pg_conn, 0, 0, 0, None)
+        pg_conn.close()
+        return
+
     total_inserted = 0
     files_processed = 0
+    run_error = None
 
-    for db_path in sorted(db_files):
-        mtime = db_path.stat().st_mtime
-        key = str(db_path)
-        if state.get(key) == mtime:
-            log.debug("Skip unchanged: %s", db_path)
-            continue
+    try:
+        for db_path in sorted(db_files):
+            mtime = db_path.stat().st_mtime
+            key = str(db_path)
+            if state.get(key) == mtime:
+                log.debug("Skip unchanged: %s", db_path)
+                continue
 
-        log.info("Loading %s ...", db_path)
-        inserted = load_sqlite_file(db_path, pg_conn)
-        log.info("  → %d rows inserted", inserted)
-        state[key] = mtime
-        total_inserted += inserted
-        files_processed += 1
+            log.info("Loading %s ...", db_path)
+            inserted = load_sqlite_file(db_path, pg_conn)
+            log.info("  → %d rows inserted", inserted)
+            state[key] = mtime
+            total_inserted += inserted
+            files_processed += 1
+    except Exception as e:
+        run_error = str(e)
+        log.error("ETL error: %s", e)
+
+    duration_ms = int((time.time() - t_start) * 1000)
+    pg_conn_status = psycopg2.connect(POSTGRES_DSN)
+    record_etl_run(pg_conn_status, files_processed, total_inserted, duration_ms, run_error)
+    pg_conn_status.close()
 
     pg_conn.close()
     save_state(state)
-    log.info("ETL complete. Files processed: %d, rows inserted: %d", files_processed, total_inserted)
+    log.info("ETL complete. Files: %d, rows: %d, duration: %dms", files_processed, total_inserted, duration_ms)
 
 
 if __name__ == "__main__":
