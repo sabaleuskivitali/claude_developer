@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -20,8 +21,9 @@ namespace WinDiagSvc.Sync;
 ///   2. mDNS            — _windiag._tcp.local query (same L2 segment)
 ///   3. DNS SRV         — _windiag._tcp.{domain} — works across L3, IT adds one record
 ///   4. DNS hostname    — windiag.{domain} → probe :49100 (fallback if no SRV)
-///   5. HTTP :49100     — probe gateway (same-subnet fallback)
-///   6. appsettings     — ServerUrl explicit override (last resort)
+///   5. Subnet scan     — parallel probe all /24 hosts on :49100 (50 concurrent, ~5s)
+///   6. HTTP :49100     — probe gateway (same-subnet fallback)
+///   7. appsettings     — ServerUrl explicit override (last resort)
 ///
 /// Caches the result; rediscovers when MarkUnreachable() is called.
 /// </summary>
@@ -113,7 +115,16 @@ public sealed class ServerDiscovery : IDisposable
             return dnsA.Value;
         }
 
-        // 5. HTTP :49100 on gateway — same-subnet last resort
+        // 5. Parallel subnet scan — probe all /24 hosts on :49100 concurrently
+        //    Works across L3 as long as the subnet is routable. No infrastructure needed.
+        var scan = await SubnetScanAsync(ct);
+        if (scan.HasValue)
+        {
+            _logger.LogInformation("ServerDiscovery: found via subnet scan");
+            return ($"https://{scan.Value.host}:{scan.Value.port}", scan.Value.thumbprint);
+        }
+
+        // 6. HTTP :49100 on gateway — last same-subnet fallback
         var http = await HttpDiscoveryAsync(ct);
         if (http.HasValue)
         {
@@ -121,7 +132,7 @@ public sealed class ServerDiscovery : IDisposable
             return http.Value;
         }
 
-        // 6. Explicit ServerUrl in appsettings — manual override
+        // 7. Explicit ServerUrl in appsettings — manual override
         if (!string.IsNullOrEmpty(_settings.ServerUrl))
         {
             _logger.LogInformation("ServerDiscovery: using ServerUrl from config");
@@ -129,6 +140,88 @@ public sealed class ServerDiscovery : IDisposable
         }
 
         return (null, null);
+    }
+
+    // ─── Parallel subnet scan ────────────────────────────────────────────────
+    // Probes all hosts in local /24 subnets concurrently (50 at a time).
+    // Each host is checked for port 49100; responders are probed for /discovery.
+    // Typical /24: ~5 seconds. Skips own IPs and broadcast addresses.
+
+    private async Task<(string host, int port, string? thumbprint)?> SubnetScanAsync(CancellationToken ct)
+    {
+        var candidates = GetSubnetHosts();
+        if (candidates.Count == 0) return null;
+
+        _logger.LogDebug("ServerDiscovery: subnet scan — {Count} hosts", candidates.Count);
+
+        using var found = new CancellationTokenSource();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, found.Token);
+
+        (string host, int port, string? thumbprint)? result = null;
+        var sem = new SemaphoreSlim(50); // max 50 concurrent probes
+
+        var tasks = candidates.Select(async ip =>
+        {
+            await sem.WaitAsync(linked.Token).ConfigureAwait(false);
+            try
+            {
+                if (linked.Token.IsCancellationRequested) return;
+                var probe = await ProbeHttpDiscovery(ip, linked.Token).ConfigureAwait(false);
+                if (probe.HasValue)
+                {
+                    result = probe;
+                    found.Cancel(); // stop all other probes
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally { sem.Release(); }
+        });
+
+        try { await Task.WhenAll(tasks).ConfigureAwait(false); }
+        catch (OperationCanceledException) { } // expected when found.Cancel() fires
+
+        return result;
+    }
+
+    private static List<string> GetSubnetHosts()
+    {
+        var hosts = new List<string>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType is NetworkInterfaceType.Loopback
+                    or NetworkInterfaceType.Tunnel) continue;
+
+                foreach (var addr in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (addr.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+
+                    var ip   = addr.Address.GetAddressBytes();
+                    var mask = addr.IPv4Mask?.GetAddressBytes();
+                    if (mask == null) continue;
+
+                    // Only scan /24 and larger (smaller = too many hosts)
+                    var prefixLen = mask.Sum(b => BitOperations.PopCount(b));
+                    if (prefixLen < 24) continue;
+
+                    var network = new byte[4];
+                    for (var i = 0; i < 4; i++) network[i] = (byte)(ip[i] & mask[i]);
+
+                    // Enumerate all host addresses in the subnet (skip network + broadcast)
+                    for (var i = 1; i <= 254; i++)
+                    {
+                        var host = new byte[] { network[0], network[1], network[2], (byte)i };
+                        var hostIp = new IPAddress(host).ToString();
+                        if (hostIp == addr.Address.ToString()) continue; // skip own IP
+                        hosts.Add(hostIp);
+                    }
+                }
+            }
+        }
+        catch { }
+        return hosts;
     }
 
     // ─── DNS SRV discovery ───────────────────────────────────────────────────
