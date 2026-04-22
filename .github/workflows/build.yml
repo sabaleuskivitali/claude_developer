@@ -266,7 +266,26 @@ jobs:
         retention-days: 30
 
     # -------------------------------------------------------------------------
-    # 16. Create GitHub Release (only on tag push or manual with version)
+    # 16. Pack full installer zip for IT (all companion files in one archive)
+    # -------------------------------------------------------------------------
+    - name: Pack installer zip for IT
+      shell: pwsh
+      run: |
+        $dst = "build/Install-WinDiagSvc-${{ env.VERSION }}"
+        New-Item -ItemType Directory -Force -Path $dst | Out-Null
+        Copy-Item build/Install-WinDiagSvc.ps1      $dst/
+        Copy-Item build/WinDiagSvc.exe              $dst/
+        Copy-Item build/extension.crx               $dst/
+        Copy-Item build/extension                   $dst/extension -Recurse
+        Copy-Item build/native-messaging-host.json  $dst/
+        Copy-Item build/appsettings.json            $dst/
+        Copy-Item build/WinDiagUpdater.ps1          $dst/
+        Compress-Archive -Path "$dst/*" -DestinationPath "build/Install-WinDiagSvc-${{ env.VERSION }}.zip"
+        $size = [math]::Round((Get-Item "build/Install-WinDiagSvc-${{ env.VERSION }}.zip").Length / 1MB, 1)
+        Write-Host "Installer zip: $size MB"
+
+    # -------------------------------------------------------------------------
+    # 17. Create GitHub Release (only on tag push or manual with version)
     # -------------------------------------------------------------------------
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
@@ -277,37 +296,33 @@ jobs:
         body: |
           ## Установка
 
+          1. Скачать `Install-WinDiagSvc-${{ env.VERSION }}.zip`
+          2. Распаковать в любую папку
+          3. Запустить PowerShell от администратора:
           ```powershell
           powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
           ```
+          4. Установить расширение Chrome: `chrome://extensions` → Режим разработчика → Загрузить распакованное → папка `extension\`
 
-          Или с параметрами:
-          ```powershell
-          powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 `
-            -SharePath "\\server\diag" `
-            -ShareUser "DOMAIN\svc_diag" `
-            -SharePass "P@ssword"
-          ```
-
-          **Extension ID:** ${{ env.EXTENSION_ID }}
+          **Extension ID:** `${{ env.EXTENSION_ID }}`
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         files: |
-          build/Install-WinDiagSvc.ps1
-          build/WinDiagSvc-${{ env.VERSION }}.zip
+          build/Install-WinDiagSvc-${{ env.VERSION }}.zip
           build/latest.json
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     # -------------------------------------------------------------------------
-    # 17. Job summary
+    # 18. Job summary
     # -------------------------------------------------------------------------
     - name: Write job summary
       if: always()
       shell: pwsh
       run: |
-        $size = if (Test-Path build/Install-WinDiagSvc.ps1) {
-          "$([math]::Round((Get-Item build/Install-WinDiagSvc.ps1).Length / 1MB, 1)) MB"
+        $zipPath = "build/Install-WinDiagSvc-${{ env.VERSION }}.zip"
+        $size = if (Test-Path $zipPath) {
+          "$([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB"
         } else { "N/A" }
 
         @"
