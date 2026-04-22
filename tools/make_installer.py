@@ -22,9 +22,7 @@ INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 #   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -ApiKey "key" -ServerUrl "https://192.168.1.100:49213"
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$ApiKey,
-
+    [string]$ApiKey    = "{API_KEY}",
     [string]$ServerUrl = ""
 )
 
@@ -367,6 +365,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--ext-id",  required=True)
+    parser.add_argument("--api-key", default="")
     parser.add_argument("--out",     required=True)
     args = parser.parse_args()
 
@@ -374,6 +373,7 @@ def main():
         VERSION=args.version,
         GENERATED=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         EXTENSION_ID=args.ext_id,
+        API_KEY=args.api_key,
     )
 
     out = Path(args.out)
