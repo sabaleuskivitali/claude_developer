@@ -31,12 +31,13 @@ echo "Using port $PORT"
 mkdir -p /certs
 if [ ! -f /certs/server.crt ]; then
     HOST_IP=$(hostname -I | awk '{print $1}')
+    SERVER_NAME="${SERVER_NAME:-server}"
     openssl req -x509 -newkey rsa:2048 \
         -keyout /certs/server.key \
         -out    /certs/server.crt \
         -days 3650 -nodes \
-        -subj "/CN=windiag-server" \
-        -addext "subjectAltName=IP:${HOST_IP},DNS:windiag.local"
+        -subj "/CN=${SERVER_NAME}" \
+        -addext "subjectAltName=IP:${HOST_IP},DNS:${SERVER_NAME}.local"
     openssl x509 -fingerprint -sha256 -noout -in /certs/server.crt \
         | sed 's/SHA256 Fingerprint=//' \
         > /certs/thumbprint.txt
@@ -51,7 +52,7 @@ if [ -d /etc/avahi/services ]; then
 <?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
-  <name replace-wildcards="yes">WinDiag on %h</name>
+  <name replace-wildcards="yes">${SERVER_NAME:-WinDiag} on %h</name>
   <service>
     <type>_windiag._tcp</type>
     <port>${PORT}</port>

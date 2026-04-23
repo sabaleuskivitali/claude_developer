@@ -32,8 +32,9 @@ def generate_profile(ctx: DeploymentContext) -> SignedBootstrapProfile:
     expires = now + timedelta(days=_PROFILE_TTL_DAYS)
 
     profile = BootstrapProfile(
-        tenant_id  = ctx.tenant_id,
-        site_id    = ctx.site_id,
+        tenant_id   = ctx.tenant_id,
+        site_id     = ctx.site_id,
+        server_name = ctx.server_name,
         issued_at  = now.isoformat(),
         expires_at = expires.isoformat(),
         endpoints  = BootstrapEndpoints(

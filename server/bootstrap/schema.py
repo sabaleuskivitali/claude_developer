@@ -26,6 +26,7 @@ class BootstrapProfile(BaseModel):
     version: str = "1"
     tenant_id: str
     site_id: str = "default"
+    server_name: str = "server"  # human-readable name shown in cabinet and agent logs
     issued_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     expires_at: str
     endpoints: BootstrapEndpoints
@@ -59,3 +60,4 @@ class DeploymentContext(BaseModel):
     server_url: str = ""
     tenant_id: str = ""
     site_id: str = "default"
+    server_name: str = "server"  # derived from owner email via derive_server_name()

@@ -18,7 +18,7 @@ async def post_events(batch: EventsBatch, request: Request):
         except RuntimeError:
             failed += 1
 
-    if failed == len(batch.events):
+    if batch.events and failed == len(batch.events):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Queue full")
 
     return {
