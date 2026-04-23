@@ -2,12 +2,19 @@ import os
 import shutil
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import db, storage
 from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap
+
+def _read_version() -> str:
+    for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
+        if p.exists():
+            return p.read_text().strip()
+    return os.environ.get("APP_VERSION", "unknown")
 
 # 300/min per IP: handles up to ~75 agents behind one corporate NAT (each agent = ~4 req/min).
 # Global 2000/sec: absorbs bursts from thousands of agents without false-positives.
@@ -29,7 +36,8 @@ async def lifespan(app: FastAPI):
     await app.state.db.close()
 
 
-app = FastAPI(title="WinDiag API", version="2.0.0", lifespan=lifespan)
+_VERSION = _read_version()
+app = FastAPI(title="WinDiag API", version=_VERSION, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -132,7 +140,7 @@ async def health(request: Request):
     except Exception:
         pass
 
-    return {"status": status, **checks}
+    return {"status": status, "version": _VERSION, **checks}
 
 
 @app.get("/discovery")
