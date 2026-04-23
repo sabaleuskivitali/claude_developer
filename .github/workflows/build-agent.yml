@@ -38,7 +38,7 @@ jobs:
           if ("${{ github.ref }}" -match '^refs/tags/agent/v(.+)$') {
             $v = $Matches[1]
           } else {
-            $v = (Get-Content agent/VERSION -Raw).Trim() + ".${{ github.run_number }}"
+            $v = (Get-Content agent/VERSION -Raw).Trim()
           }
         }
         echo "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
