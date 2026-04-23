@@ -199,17 +199,22 @@ async def create_pool() -> asyncpg.Pool:
     return pool
 
 
+def _s(v: str | None) -> str | None:
+    """Strip null bytes — PostgreSQL UTF-8 rejects \x00."""
+    return v.replace("\x00", "") if v else v
+
+
 def _event_to_record(e: EventIn) -> tuple:
     return (
-        str(e.event_id), str(e.session_id), e.machine_id, e.user_id,
+        str(e.event_id), str(e.session_id), _s(e.machine_id), _s(e.user_id),
         e.timestamp_utc, e.synced_ts, e.drift_ms, e.drift_rate_ppm,
-        e.sequence_idx, e.layer, e.event_type,
-        e.process_name, e.app_version, e.window_title, e.window_class,
-        e.element_type, e.element_name, e.element_auto_id,
-        e.case_id, e.screenshot_path, e.screenshot_dhash, e.capture_reason,
-        e.log_source, e.log_level, e.raw_message, e.message_hash,
-        e.document_path, e.document_name,
-        json.dumps(e.payload, default=str),
+        e.sequence_idx, _s(e.layer), _s(e.event_type),
+        _s(e.process_name), _s(e.app_version), _s(e.window_title), _s(e.window_class),
+        _s(e.element_type), _s(e.element_name), _s(e.element_auto_id),
+        _s(e.case_id), _s(e.screenshot_path), e.screenshot_dhash, _s(e.capture_reason),
+        _s(e.log_source), _s(e.log_level), _s(e.raw_message), _s(e.message_hash),
+        _s(e.document_path), _s(e.document_name),
+        json.dumps(e.payload, default=str).replace("\x00", ""),
     )
 
 
