@@ -471,7 +471,8 @@ def cabinet(request: Request):
                    if agents_data else "")
 
     if bootstrap_url:
-        ps_cmd = f"powershell -Command \"iwr '{bootstrap_url}' -OutFile agent-setup.ps1; .\\agent-setup.ps1\""
+        proxy_url = f"https://seamlean.com/bootstrap/{install_token}"
+        ps_cmd = f"powershell -ExecutionPolicy Bypass -Command \"iwr 'https://seamlean.com/agent' -OutFile $env:TEMP\\\\sl-agent.zip; Expand-Archive -Path $env:TEMP\\\\sl-agent.zip -DestinationPath $env:TEMP\\\\sl-agent -Force; & $env:TEMP\\\\sl-agent\\\\install.ps1 -BootstrapProfileUrl '{proxy_url}'\""
         agent_install_section = f"""
     <div class="sec-title">Установить агент на Windows</div>
     <p style="font-size:.85rem;color:#6b7280;margin-bottom:8px">Запустите на Windows-машине от имени администратора:</p>
@@ -647,6 +648,38 @@ echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
 @app.get("/install.sh", response_class=PlainTextResponse)
 def install_sh():
     return PlainTextResponse(_INSTALL_SH, media_type="text/x-sh")
+
+
+# ── Agent package download ────────────────────────────────────────────────────
+
+_AGENT_ZIP = Path("/app/agent/WinDiagSvc.zip")
+
+@app.get("/agent")
+def agent_download():
+    if _AGENT_ZIP.exists():
+        from fastapi.responses import FileResponse
+        return FileResponse(_AGENT_ZIP, media_type="application/zip", filename="WinDiagSvc.zip")
+    return JSONResponse(status_code=503, content={"error": "Agent package not yet available"})
+
+
+# ── Bootstrap proxy (hides server URL from agent install command) ─────────────
+
+@app.get("/bootstrap/{token}")
+def bootstrap_proxy(token: str):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT u.id FROM users u WHERE u.install_token = ?", (token,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Invalid token"})
+    user_server = _get_user_server(row[0])
+    if not user_server:
+        return JSONResponse(status_code=503, content={"error": "Server not registered"})
+    data = _api(user_server["server_url"], user_server["api_key"], "/api/v1/bootstrap/active")
+    if not data:
+        return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
+    return data
 
 
 # ── Robots / Health ───────────────────────────────────────────────────────────
