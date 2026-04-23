@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -40,6 +40,10 @@ def init_db():
         api_key TEXT NOT NULL,
         server_name TEXT DEFAULT 'Мой сервер',
         registered_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS config (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     )""")
     conn.commit()
     # migrate: add install_token if column missing
@@ -618,10 +622,11 @@ if [ -n "$INSTALL_TOKEN" ]; then
   if [ -z "$PUBLIC_IP" ]; then
     PUBLIC_IP=$(hostname -I | awk '{print $1}')
   fi
-  # Use standard HTTPS port 443 (nginx proxies 443 → 49200)
-  SERVER_URL="https://${PUBLIC_IP}"
+  SERVER_URL="https://${PUBLIC_IP}:49200"
   # Write SERVER_URL to .env so the bootstrap generator can use it
-  sed -i "s|^SERVER_URL=.*|SERVER_URL=${SERVER_URL}|" .env
+  if ! grep -q '^SERVER_URL=' .env; then
+    echo "SERVER_URL=${SERVER_URL}" >> .env
+  fi
   API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
 
   echo "Registering server with Seamlean cloud..."
@@ -650,15 +655,24 @@ def install_sh():
 
 
 # ── Agent package download ────────────────────────────────────────────────────
+# Rule: no binary files on cloud — only a redirect URL stored in DB.
+# Updated by `make deploy` after each GitHub Release.
 
-_AGENT_ZIP = Path("/app/agent/WinDiagSvc.zip")
+def _get_agent_url():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT value FROM config WHERE key = 'agent_download_url'").fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 @app.get("/agent")
 def agent_download():
-    if _AGENT_ZIP.exists():
-        from fastapi.responses import FileResponse
-        return FileResponse(_AGENT_ZIP, media_type="application/zip", filename="WinDiagSvc.zip")
-    return JSONResponse(status_code=503, content={"error": "Agent package not yet available"})
+    url = _get_agent_url()
+    if url:
+        return RedirectResponse(url, status_code=302)
+    return JSONResponse(status_code=503, content={"error": "Agent URL not configured"})
 
 
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────

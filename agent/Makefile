@@ -10,7 +10,7 @@ VERSION    := $(shell cat VERSION)
 OUT_DIR    := /tmp/agent-publish
 ZIP_PATH   := /tmp/WinDiagSvc.zip
 CLOUD_HOST := agent@178.104.1.6
-CLOUD_DB   := /home/agent/cloud/app/data/users.db
+CLOUD_DB   := /app/data/users.db
 GH_REPO    := sabaleuskivitali/claude_developer
 
 # ── Targets ─────────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ deploy: all
 		--notes "Agent v$(VERSION)" 2>&1 | tail -1
 	@DOWNLOAD_URL="https://github.com/$(GH_REPO)/releases/download/agent%2Fv$(VERSION)/WinDiagSvc.zip"; \
 	echo "==> Updating redirect URL on cloud..."; \
-	ssh $(CLOUD_HOST) "sqlite3 $(CLOUD_DB) \"INSERT OR REPLACE INTO config(key,value) VALUES('agent_download_url','$$DOWNLOAD_URL')\""; \
+	ssh $(CLOUD_HOST) "docker exec cloud-api-1 python3 -c \"import sqlite3; c=sqlite3.connect('$(CLOUD_DB)'); c.execute(\\\"CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT NOT NULL)\\\"); c.execute(\\\"INSERT OR REPLACE INTO config(key,value) VALUES('agent_download_url','$$DOWNLOAD_URL')\\\"); c.commit(); c.close(); print('url saved')\""; \
 	echo "    OK: seamlean.com/agent -> $$DOWNLOAD_URL"
 
 ## 5. Tag release in git (call before deploy)
