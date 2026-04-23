@@ -108,6 +108,16 @@ MIGRATIONS = [
         error       TEXT
     );
     """,
+    # Web users table (cabinet access)
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id           BIGSERIAL PRIMARY KEY,
+        email        TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+    """,
     # Views — DROP + CREATE so column changes always apply cleanly
     """
     DROP VIEW IF EXISTS events_corrected CASCADE;

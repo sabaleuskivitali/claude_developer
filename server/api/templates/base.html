@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Seamlean{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f7; color: #1d1d1f; min-height: 100vh; }
+    a { color: #0071e3; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .nav { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 0 2rem; display: flex; align-items: center; justify-content: space-between; height: 52px; }
+    .nav-brand { font-weight: 700; font-size: 1.1rem; color: #1d1d1f; }
+    .nav-actions { display: flex; gap: 1rem; align-items: center; font-size: .9rem; }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    .card { background: #fff; border-radius: 12px; padding: 2rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+
+    .btn { display: inline-block; padding: .6rem 1.4rem; border-radius: 8px; font-size: .95rem; font-weight: 500; cursor: pointer; border: none; transition: opacity .15s; }
+    .btn:hover { opacity: .85; text-decoration: none; }
+    .btn-primary { background: #0071e3; color: #fff; }
+    .btn-secondary { background: #e8e8ed; color: #1d1d1f; }
+    .btn-sm { padding: .35rem .9rem; font-size: .85rem; }
+
+    .form-group { margin-bottom: 1.2rem; }
+    .form-group label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: .4rem; color: #555; }
+    .form-group input { width: 100%; padding: .6rem .9rem; border: 1px solid #d0d0d0; border-radius: 8px; font-size: .95rem; outline: none; transition: border-color .15s; }
+    .form-group input:focus { border-color: #0071e3; }
+
+    .alert { padding: .75rem 1rem; border-radius: 8px; font-size: .9rem; margin-bottom: 1rem; }
+    .alert-error { background: #fff0f0; border: 1px solid #ffcdd2; color: #c62828; }
+
+    .badge { display: inline-block; padding: .2rem .6rem; border-radius: 6px; font-size: .78rem; font-weight: 600; }
+    .badge-online  { background: #e8f5e9; color: #2e7d32; }
+    .badge-warning { background: #fff8e1; color: #f57f17; }
+    .badge-offline { background: #fbe9e7; color: #bf360c; }
+    .badge-ok      { background: #e8f5e9; color: #2e7d32; }
+    .badge-degraded{ background: #fbe9e7; color: #bf360c; }
+
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th { text-align: left; padding: .6rem .8rem; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #888; border-bottom: 1px solid #e8e8e8; }
+    td { padding: .65rem .8rem; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+
+    .section-title { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #1d1d1f; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">Seamlean</span>
+    <div class="nav-actions">
+      {% block nav_actions %}{% endblock %}
+    </div>
+  </nav>
+  {% block body %}{% endblock %}
+</body>
+</html>
