@@ -454,7 +454,7 @@ def cabinet(request: Request):
         bootstrap_url = (user_server["server_url"].rstrip("/") + "/api/v1/bootstrap/active"
                          if bootstrap_raw.get("signed_data") else "")
     else:
-        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token} --name my-server --url https://YOUR-SERVER-HOSTNAME"
+        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
         server_panel = f"""
   <div class="card">
     <div class="sec-title">Установить сервер</div>
@@ -530,14 +530,12 @@ set -euo pipefail
 REPO="https://github.com/sabaleuskivitali/claude_developer.git"
 INSTALL_DIR="/opt/seamlean"
 INSTALL_TOKEN=""
-SERVER_NAME="seamlean"
-SERVER_URL_ARG=""
+# Server name = hostname of the machine (auto, no hardcode)
+SERVER_NAME=$(hostname -s 2>/dev/null || hostname)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token|-t) INSTALL_TOKEN="$2"; shift 2;;
-    --name|-n)  SERVER_NAME="$2";   shift 2;;
-    --url|-u)   SERVER_URL_ARG="$2"; shift 2;;
     *) shift;;
   esac
 done
@@ -619,10 +617,15 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  # Use --url if provided, otherwise fall back to public IP
-  if [ -n "$SERVER_URL_ARG" ]; then
-    SERVER_URL="${SERVER_URL_ARG}"
-  else
+  # Auto-detect public URL:
+  # 1. Cloudflared quick tunnel URL (if cloudflared is running)
+  # 2. Public IP:443 fallback (for on-premises / direct NAT)
+  SERVER_URL=""
+  if command -v cloudflared &>/dev/null; then
+    CF_URL=$(cloudflared tunnel info 2>/dev/null | grep -oP 'https://[^\s]+\.cfargotunnel\.com' | head -1)
+    [ -n "$CF_URL" ] && SERVER_URL="$CF_URL"
+  fi
+  if [ -z "$SERVER_URL" ]; then
     PUBLIC_IP=$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
     [ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(hostname -I | awk '{print $1}')
     SERVER_URL="https://${PUBLIC_IP}:443"
