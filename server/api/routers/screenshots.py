@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from fastapi import UploadFile, File
-from auth import require_api_key
+from auth import require_agent_key
 import storage
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_agent_key)])
 
 
 @router.put("/screenshots/{machine_id}/{date_str}/{event_id}", status_code=202)

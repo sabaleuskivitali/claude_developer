@@ -1,9 +1,9 @@
 import json
 from fastapi import APIRouter, Depends, Request, HTTPException, status
-from auth import require_api_key
+from auth import require_agent_key
 from models import CommandAck
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_agent_key)])
 
 
 @router.get("/commands/{machine_id}")
