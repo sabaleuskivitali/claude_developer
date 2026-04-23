@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Text.Json;
 
 namespace WinDiagSvc.Bootstrap.Resolvers;
