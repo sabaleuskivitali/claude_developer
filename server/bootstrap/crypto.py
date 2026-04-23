@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from bootstrap.schema import BootstrapProfile, SignedBootstrapProfile
 
 _KEY_PATH_ENV = "BOOTSTRAP_CA_KEY_PATH"
-_DEFAULT_KEY_PATH = "/app/certs/bootstrap_ca.pem"
+_DEFAULT_KEY_PATH = "/certs/bootstrap_ca.pem"
 
 
 def _key_path() -> Path:

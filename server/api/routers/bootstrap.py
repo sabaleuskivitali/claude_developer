@@ -163,18 +163,18 @@ async def list_profiles(request: Request):
     return {"profiles": rows}
 
 
+@router.get("/pubkey", dependencies=[Depends(require_api_key)])
+async def get_pubkey():
+    """Return the CA public key PEM — embed this in the agent binary at build time."""
+    return {"pem": export_public_key_pem()}
+
+
 @router.get("/{profile_id}", dependencies=[Depends(require_api_key)])
 async def get_profile(profile_id: str, request: Request):
     row = await store.get_by_id(request.app.state.db, profile_id)
     if not row:
         raise HTTPException(404, "Profile not found")
     return row
-
-
-@router.get("/pubkey", dependencies=[Depends(require_api_key)])
-async def get_pubkey():
-    """Return the CA public key PEM — embed this in the agent binary at build time."""
-    return {"pem": export_public_key_pem()}
 
 
 @router.get("/agents", dependencies=[Depends(require_api_key)])
