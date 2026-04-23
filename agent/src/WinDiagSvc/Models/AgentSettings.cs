@@ -13,6 +13,7 @@ public sealed class AgentSettings
     public string ServerUrl        { get; set; } = "";  // empty = autodiscovery
     public string ApiKey           { get; set; } = "";
     public string ServerThumbprint { get; set; } = "";  // SHA256 hex, filled on first connect
+    public string CloudProfileUrl  { get; set; } = "";  // cloud bootstrap profile URL
 
     // SMB share — filled by install.ps1
     public string SharePath { get; set; } = "";

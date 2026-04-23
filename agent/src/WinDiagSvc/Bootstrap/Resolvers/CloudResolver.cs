@@ -4,12 +4,10 @@ using System.Text.Json;
 namespace WinDiagSvc.Bootstrap.Resolvers;
 
 /// <summary>
-/// Downloads the bootstrap profile from a URL supplied via:
-///   1. Registry: HKLM\SOFTWARE\WinDiagSvc\Bootstrap\ProfileUrl
-///   2. Environment variable: WINDIAG_BOOTSTRAP_URL
-///
-/// Used for cloud-assisted bootstrap or when IT sets a static URL.
-/// The URL must serve a SignedBootstrapProfile JSON.
+/// Downloads the bootstrap profile from a URL supplied via (priority order):
+///   1. AgentSettings.CloudProfileUrl  (appsettings.json — injected at build time by CI)
+///   2. Registry: HKLM\SOFTWARE\WinDiagSvc\Bootstrap\ProfileUrl
+///   3. Environment variable: WINDIAG_BOOTSTRAP_URL
 /// </summary>
 public sealed class CloudResolver : IProfileResolver
 {
@@ -17,9 +15,20 @@ public sealed class CloudResolver : IProfileResolver
     private const string RegUrlValue = "ProfileUrl";
     private const string EnvVar      = "WINDIAG_BOOTSTRAP_URL";
 
-    private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // Cloud server uses self-signed cert; security relies on ECDSA profile signature verification.
+    private static readonly HttpClientHandler _handler = new()
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    };
+    private static readonly HttpClient _http = new(_handler) { Timeout = TimeSpan.FromSeconds(10) };
 
+    private readonly string _settingsUrl;
     public string Name => "cloud";
+
+    public CloudResolver(string settingsUrl = "")
+    {
+        _settingsUrl = settingsUrl;
+    }
 
     public async Task<SignedBootstrapProfile?> TryResolveAsync(CancellationToken ct)
     {
@@ -39,8 +48,10 @@ public sealed class CloudResolver : IProfileResolver
         }
     }
 
-    private static string? GetUrl()
+    private string? GetUrl()
     {
+        if (!string.IsNullOrEmpty(_settingsUrl)) return _settingsUrl;
+
         var env = Environment.GetEnvironmentVariable(EnvVar);
         if (!string.IsNullOrEmpty(env)) return env;
 

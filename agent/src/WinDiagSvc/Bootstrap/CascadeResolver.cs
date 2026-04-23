@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WinDiagSvc.Bootstrap.Resolvers;
+using WinDiagSvc.Models;
 
 namespace WinDiagSvc.Bootstrap;
 
@@ -9,7 +11,7 @@ namespace WinDiagSvc.Bootstrap;
 /// Priority:
 ///   1. Registry   — GPO/Intune/install.ps1
 ///   2. File       — offline package (bootstrap_profile.json beside exe)
-///   3. Cloud      — WINDIAG_BOOTSTRAP_URL env / registry ProfileUrl
+///   3. Cloud      — AgentSettings.CloudProfileUrl / env / registry
 ///   4. DNS-SD     — mDNS discovery (L2 only)
 /// </summary>
 public sealed class CascadeResolver
@@ -17,14 +19,14 @@ public sealed class CascadeResolver
     private readonly IReadOnlyList<IProfileResolver> _resolvers;
     private readonly ILogger<CascadeResolver> _log;
 
-    public CascadeResolver(ILogger<CascadeResolver> log)
+    public CascadeResolver(ILogger<CascadeResolver> log, IOptions<AgentSettings> settings)
     {
         _log = log;
         _resolvers =
         [
             new RegistryProfileResolver(),
             new FileProfileResolver(),
-            new CloudResolver(),
+            new CloudResolver(settings.Value.CloudProfileUrl),
             new DnsSdResolver(),
         ];
     }

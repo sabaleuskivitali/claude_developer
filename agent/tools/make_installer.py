@@ -184,8 +184,9 @@ try {{
     $cfg.AgentSettings.ServerUrl         = $ServerUrl
     $cfg.AgentSettings.ExtensionId       = $ExtensionId
     $cfg.AgentSettings.ServerThumbprint  = "{SERVER_THUMBPRINT}"
+    $cfg.AgentSettings.CloudProfileUrl   = "{CLOUD_PROFILE_URL}"
     $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-    Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint written"
+    Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint, CloudProfileUrl written"
 }} catch {{
     Send-InstallError "patch_config" "$_"
     Write-Warn "Config patch failed: $_"
@@ -368,6 +369,7 @@ def main():
     parser.add_argument("--ext-id",            required=True)
     parser.add_argument("--api-key",           default="")
     parser.add_argument("--server-thumbprint", default="")
+    parser.add_argument("--profile-url",       default="")
     parser.add_argument("--out",               required=True)
     args = parser.parse_args()
 
@@ -377,6 +379,7 @@ def main():
         EXTENSION_ID=args.ext_id,
         API_KEY=args.api_key,
         SERVER_THUMBPRINT=args.server_thumbprint,
+        CLOUD_PROFILE_URL=args.profile_url,
     )
 
     out = Path(args.out)
