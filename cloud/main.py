@@ -454,7 +454,7 @@ def cabinet(request: Request):
         bootstrap_url = (user_server["server_url"].rstrip("/") + "/api/v1/bootstrap/active"
                          if bootstrap_raw.get("signed_data") else "")
     else:
-        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
+        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token} --name my-server --url https://YOUR-SERVER-HOSTNAME"
         server_panel = f"""
   <div class="card">
     <div class="sec-title">Установить сервер</div>
@@ -531,11 +531,13 @@ REPO="https://github.com/sabaleuskivitali/claude_developer.git"
 INSTALL_DIR="/opt/seamlean"
 INSTALL_TOKEN=""
 SERVER_NAME="seamlean"
+SERVER_URL_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token|-t) INSTALL_TOKEN="$2"; shift 2;;
     --name|-n)  SERVER_NAME="$2";   shift 2;;
+    --url|-u)   SERVER_URL_ARG="$2"; shift 2;;
     *) shift;;
   esac
 done
@@ -617,16 +619,16 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  # Try public IP first, fall back to local IP
-  PUBLIC_IP=$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
-  if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(hostname -I | awk '{print $1}')
+  # Use --url if provided, otherwise fall back to public IP
+  if [ -n "$SERVER_URL_ARG" ]; then
+    SERVER_URL="${SERVER_URL_ARG}"
+  else
+    PUBLIC_IP=$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+    [ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(hostname -I | awk '{print $1}')
+    SERVER_URL="https://${PUBLIC_IP}:443"
   fi
-  SERVER_URL="https://${PUBLIC_IP}:49200"
   # Write SERVER_URL to .env so the bootstrap generator can use it
-  if ! grep -q '^SERVER_URL=' .env; then
-    echo "SERVER_URL=${SERVER_URL}" >> .env
-  fi
+  sed -i "s|^SERVER_URL=.*|SERVER_URL=${SERVER_URL}|" .env 2>/dev/null || echo "SERVER_URL=${SERVER_URL}" >> .env
   API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
 
   echo "Registering server with Seamlean cloud..."
@@ -644,7 +646,7 @@ fi
 
 echo ""
 echo "=== ✅ Seamlean server installed ==="
-echo "API: https://$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || hostname -I | awk '{print $1}'):49200"
+echo "API: ${SERVER_URL:-https://$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || hostname -I | awk '{print $1}'):443}"
 echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
 """
 
