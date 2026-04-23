@@ -3,8 +3,8 @@ tools/extension.pem
 
 # Build artifacts
 build/
-src/WinDiagSvc/bin/
-src/WinDiagSvc/obj/
+**/bin/
+**/obj/
 
 # Temp
 nssm.zip
