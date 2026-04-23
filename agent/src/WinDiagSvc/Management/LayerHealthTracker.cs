@@ -18,7 +18,8 @@ public sealed class LayerHealthTracker
         long   LastEventMs,
         int    Events5Min,
         int    Errors5Min,
-        string Status);
+        string Status,
+        bool   IsIdle);
 
     // Mutable live state, only ever accessed through interlocked / volatile helpers
     private sealed class LayerState
@@ -26,14 +27,15 @@ public sealed class LayerHealthTracker
         public long _lastEventMs;                // Interlocked.Read/Exchange
         public volatile int _events5Min;
         public volatile int _errors5Min;
-        public volatile string _status = "inactive";  // ok | stuck | inactive | error
+        public volatile string _status = "inactive";  // ok | stuck | inactive | error | idle
+        public volatile bool _isIdle;
 
         public readonly ConcurrentDictionary<long, int> EventBuckets = new();
         public readonly ConcurrentDictionary<long, int> ErrorBuckets = new();
 
         public LayerSnapshot Snapshot() => new(
             Interlocked.Read(ref _lastEventMs),
-            _events5Min, _errors5Min, _status);
+            _events5Min, _errors5Min, _status, _isIdle);
     }
 
     public static readonly string[] KnownLayers =
@@ -82,9 +84,22 @@ public sealed class LayerHealthTracker
             if (k < cutoff) state.EventBuckets.TryRemove(k, out _);
 
         state._events5Min = state.EventBuckets.Values.Sum();
+        state._isIdle = false;
 
-        if (state._status is "stuck" or "inactive")
+        if (state._status is "stuck" or "inactive" or "idle")
             state._status = "ok";
+    }
+
+    /// <summary>
+    /// Called when an IdleStart event is written for this layer.
+    /// Resets the silence timer so the watchdog doesn't false-positive during user idle.
+    /// </summary>
+    public void MarkIdle(string layer)
+    {
+        var state = _states.GetOrAdd(layer, _ => new LayerState());
+        Interlocked.Exchange(ref state._lastEventMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        state._isIdle  = true;
+        state._status  = "idle";
     }
 
     public void RecordError(string layer, string? message = null)

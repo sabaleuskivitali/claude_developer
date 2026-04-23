@@ -24,7 +24,7 @@ public sealed class UiAutomationCapture : BackgroundService
     private AutomationEventHandler? _invokeHandler;
     private AutomationPropertyChangedEventHandler? _valueHandler;
     private AutomationPropertyChangedEventHandler? _selectionHandler;
-    private AutomationEventHandler? _focusHandler;
+    private AutomationFocusChangedEventHandler? _focusHandler;
 
     // ValueChanged debounce: screenshot fires N ms after the last keystroke
     private Timer? _valueDebounceTimer;
@@ -71,11 +71,7 @@ public sealed class UiAutomationCapture : BackgroundService
                 SelectionItemPattern.IsSelectedProperty);
 
             _focusHandler = (src, _) => HandleFocus(src);
-            Automation.AddAutomationEventHandler(
-                AutomationElement.AutomationFocusChangedEvent,
-                AutomationElement.RootElement,
-                TreeScope.Descendants,
-                _focusHandler);
+            Automation.AddAutomationFocusChangedEventHandler(_focusHandler);
         }
         catch (Exception ex)
         {

@@ -66,6 +66,9 @@ public sealed class LayerWatchdog : BackgroundService
         {
             if (threshold == 0) continue;   // browser: not monitored
 
+            var snapshot  = _tracker.GetSnapshot().GetValueOrDefault(layer);
+            if (snapshot.IsIdle) continue;  // machine idle — not stuck
+
             var secsSince = _tracker.SecondsSinceLastEvent(layer);
             var threshSec = threshold * 60;
 

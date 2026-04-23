@@ -93,7 +93,10 @@ public sealed class EventStore : IDisposable
     public void Insert(ActivityEvent ev)
     {
         // Update per-layer health tracker on every event write
-        _tracker?.RecordEvent(ev.Layer);
+        if (ev.EventType == nameof(EventType.IdleStart))
+            _tracker?.MarkIdle(ev.Layer);
+        else
+            _tracker?.RecordEvent(ev.Layer);
         if (ev.EventType == nameof(EventType.LayerError))
             _tracker?.RecordError(ev.Layer, ev.RawMessage);
 
