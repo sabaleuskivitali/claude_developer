@@ -434,6 +434,23 @@ public sealed class ServerDiscovery : IDisposable
         return packet;
     }
 
+    // ─── Startup jitter ──────────────────────────────────────────────────────
+    // Spreads first-discovery across 120s to avoid all agents hitting server at once.
+    // Derived deterministically from MachineId so the same machine always gets the same delay.
+
+    public static TimeSpan GetStartupJitter(string machineId)
+    {
+        if (string.IsNullOrEmpty(machineId) || machineId.Length < 8)
+            return TimeSpan.FromSeconds(10);
+        try
+        {
+            var bytes = Convert.FromHexString(machineId[..8]);
+            var seed  = BitConverter.ToUInt32(bytes, 0);
+            return TimeSpan.FromSeconds(seed % 120);
+        }
+        catch { return TimeSpan.FromSeconds(10); }
+    }
+
     // ─── UDP beacon ──────────────────────────────────────────────────────────
 
     private async Task<(string host, int port, string? thumbprint)?> UdpBeaconListenAsync(CancellationToken ct)
@@ -443,10 +460,10 @@ public sealed class ServerDiscovery : IDisposable
             using var udp = new UdpClient();
             udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             udp.Client.Bind(new IPEndPoint(IPAddress.Any, BeaconPort));
-            udp.Client.ReceiveTimeout = 3000;
+            udp.Client.ReceiveTimeout = 10_000;
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(3000);
+            cts.CancelAfter(10_000);
 
             var result = await udp.ReceiveAsync(cts.Token);
             var json   = System.Text.Encoding.UTF8.GetString(result.Buffer);
@@ -658,13 +675,20 @@ public sealed class ServerDiscovery : IDisposable
     {
         if (cert is null) return false;
 
-        // Use thumbprint discovered at runtime if not in settings
-        var expected = _cachedThumbprint ?? _settings.ServerThumbprint;
-        if (string.IsNullOrEmpty(expected)) return true; // not yet pinned — allow first connect
+        if (string.IsNullOrEmpty(_settings.ServerThumbprint))
+        {
+            _logger.LogWarning("TLS: ServerThumbprint not configured — connection refused");
+            return false;
+        }
 
-        var actual = Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()))
-            .Replace(":", "").ToUpperInvariant();
-        return actual == expected.Replace(":", "").ToUpperInvariant();
+        var actual   = Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()))
+                           .Replace(":", "").ToUpperInvariant();
+        var expected = _settings.ServerThumbprint.Replace(":", "").ToUpperInvariant();
+
+        if (actual != expected)
+            _logger.LogWarning("TLS: thumbprint mismatch — possible rogue server");
+
+        return actual == expected;
     }
 
     public void Dispose()

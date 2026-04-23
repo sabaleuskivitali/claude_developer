@@ -54,7 +54,9 @@ public sealed class HttpSyncWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        var jitter = ServerDiscovery.GetStartupJitter(_settings.MachineId);
+        _logger.LogInformation("HttpSyncWorker: startup jitter {Sec}s", (int)jitter.TotalSeconds);
+        await Task.Delay(jitter, ct);
 
         var interval = TimeSpan.FromSeconds(_settings.SyncIntervalSeconds);
         using var timer = new PeriodicTimer(interval);

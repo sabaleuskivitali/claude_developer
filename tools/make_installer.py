@@ -180,11 +180,12 @@ Write-Step "Configuring appsettings.json"
 try {{
     $cfgPath = "$InstallDir\appsettings.json"
     $cfg     = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    $cfg.AgentSettings.ApiKey      = $ApiKey
-    $cfg.AgentSettings.ServerUrl   = $ServerUrl
-    $cfg.AgentSettings.ExtensionId = $ExtensionId
+    $cfg.AgentSettings.ApiKey            = $ApiKey
+    $cfg.AgentSettings.ServerUrl         = $ServerUrl
+    $cfg.AgentSettings.ExtensionId       = $ExtensionId
+    $cfg.AgentSettings.ServerThumbprint  = "{SERVER_THUMBPRINT}"
     $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-    Write-OK "ApiKey, ServerUrl, ExtensionId written"
+    Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint written"
 }} catch {{
     Send-InstallError "patch_config" "$_"
     Write-Warn "Config patch failed: $_"
@@ -363,10 +364,11 @@ if (-not $isDomain) {{
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--ext-id",  required=True)
-    parser.add_argument("--api-key", default="")
-    parser.add_argument("--out",     required=True)
+    parser.add_argument("--version",           required=True)
+    parser.add_argument("--ext-id",            required=True)
+    parser.add_argument("--api-key",           default="")
+    parser.add_argument("--server-thumbprint", default="")
+    parser.add_argument("--out",               required=True)
     args = parser.parse_args()
 
     script = INSTALLER_TEMPLATE.format(
@@ -374,6 +376,7 @@ def main():
         GENERATED=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         EXTENSION_ID=args.ext_id,
         API_KEY=args.api_key,
+        SERVER_THUMBPRINT=args.server_thumbprint,
     )
 
     out = Path(args.out)

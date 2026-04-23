@@ -201,10 +201,11 @@ jobs:
       shell: pwsh
       run: |
         python tools/make_installer.py `
-          --version ${{ env.VERSION }} `
-          --ext-id  ${{ env.EXTENSION_ID }} `
-          --api-key ${{ secrets.AGENT_API_KEY }} `
-          --out     build/Install-WinDiagSvc.ps1
+          --version           ${{ env.VERSION }} `
+          --ext-id            ${{ env.EXTENSION_ID }} `
+          --api-key           ${{ secrets.AGENT_API_KEY }} `
+          --server-thumbprint ${{ secrets.SERVER_THUMBPRINT }} `
+          --out               build/Install-WinDiagSvc.ps1
 
     - name: Verify installer is pure ASCII
       shell: python

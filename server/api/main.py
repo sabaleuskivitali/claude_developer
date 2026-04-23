@@ -3,8 +3,13 @@ import shutil
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import db, storage
 from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl
+
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
 
 
 @asynccontextmanager
@@ -19,6 +24,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="WinDiag API", version="2.0.0", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(events.router)
 app.include_router(errors.router)
@@ -121,8 +128,10 @@ async def health(request: Request):
 
 
 @app.get("/discovery")
-async def discovery():
-    """Plain endpoint (no auth). Returns port and TLS thumbprint for cross-subnet agents."""
+@limiter.limit("1/second")
+@limiter.limit("20/second", key_func=lambda: "global")
+async def discovery(request: Request):
+    """Plain endpoint (no auth). Returns port for cross-subnet agents."""
     port_env = "/app/runtime/port.env"
     port = int(os.environ.get("PORT", 49200))
     if os.path.exists(port_env):
