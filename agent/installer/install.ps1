@@ -56,8 +56,8 @@ Copy-Item "$scriptDir\WinDiagSvc.exe"              $InstallDir -Force
 Copy-Item "$scriptDir\appsettings.json"            $InstallDir -Force
 Copy-Item "$scriptDir\WinDiagUpdater.ps1"          $InstallDir -Force
 Copy-Item "$scriptDir\nssm.exe"                    $InstallDir -Force
-Copy-Item "$scriptDir\extension.crx"               $InstallDir -Force
-Copy-Item "$scriptDir\native-messaging-host.json"  $InstallDir -Force
+if (Test-Path "$scriptDir\extension.crx")             { Copy-Item "$scriptDir\extension.crx"              $InstallDir -Force }
+if (Test-Path "$scriptDir\native-messaging-host.json") { Copy-Item "$scriptDir\native-messaging-host.json" $InstallDir -Force }
 Write-OK "Files copied"
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ if ($ApiKey)    { $cfg.AgentSettings.ApiKey    = $ApiKey }
 if ($SharePath) { $cfg.AgentSettings.SharePath = $SharePath }
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
 if ($ApiKey)    { Write-OK "ApiKey    = $($ApiKey.Substring(0,8))..." }
-if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath — will use domain Integrated Auth" }
+if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath - will use domain Integrated Auth" }
 
 # ---------------------------------------------------------------------------
 # 3b. Bootstrap profile — written to registry for CascadeResolver (priority 1)
@@ -90,7 +90,7 @@ elseif ($BootstrapProfileUrl) {
     Write-OK "Bootstrap profile URL written to registry: $BootstrapProfileUrl"
 }
 else {
-    Write-OK "No bootstrap profile supplied — agent will use DNS-SD discovery at runtime"
+    Write-OK "No bootstrap profile supplied - agent will use DNS-SD discovery at runtime"
 }
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ if ($ShareUser -and $SharePass) {
     net use $SharePath /user:$ShareUser $SharePass /persistent:yes 2>$null
     Write-OK "SMB mapped to $SharePath"
 } else {
-    Write-Step "SMB share — using Integrated Auth (domain)"
+    Write-Step "SMB share - using Integrated Auth (domain)"
     Write-OK "No credentials needed"
 }
 
@@ -124,9 +124,10 @@ Write-Step "Installing Windows Service: $ServiceName"
 $nssm = "$InstallDir\nssm.exe"
 $exe  = "$InstallDir\WinDiagSvc.exe"
 
-# Remove old if exists
-& $nssm stop    $ServiceName 2>$null
-& $nssm remove  $ServiceName confirm 2>$null
+# Remove old if exists (ignore errors if service doesn't exist yet)
+try { & $nssm stop   $ServiceName 2>$null } catch { }
+try { & $nssm remove $ServiceName confirm 2>$null } catch { }
+$LASTEXITCODE = 0
 
 & $nssm install $ServiceName $exe
 & $nssm set     $ServiceName AppDirectory     $InstallDir
@@ -144,41 +145,49 @@ Write-OK "Service installed"
 # ---------------------------------------------------------------------------
 Write-Step "Registering Native Messaging Host"
 $hostManifest = "$InstallDir\native-messaging-host.json"
+if (Test-Path $hostManifest) {
+    # Patch the manifest to use absolute path to the agent exe
+    $manifest = Get-Content $hostManifest -Raw | ConvertFrom-Json
+    $manifest.path = $exe
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content $hostManifest -Encoding UTF8
 
-# Patch the manifest to use absolute path to the agent exe
-$manifest = Get-Content $hostManifest -Raw | ConvertFrom-Json
-$manifest.path = $exe
-$manifest | ConvertTo-Json -Depth 5 | Set-Content $hostManifest -Encoding UTF8
+    $chromePath = "HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.windiag.host"
+    $edgePath   = "HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.windiag.host"
 
-$chromePath = "HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.windiag.host"
-$edgePath   = "HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.windiag.host"
+    New-Item -Force -Path $chromePath | Out-Null
+    Set-ItemProperty -Path $chromePath -Name "(Default)" -Value $hostManifest
 
-New-Item -Force -Path $chromePath | Out-Null
-Set-ItemProperty -Path $chromePath -Name "(Default)" -Value $hostManifest
+    New-Item -Force -Path $edgePath | Out-Null
+    Set-ItemProperty -Path $edgePath -Name "(Default)" -Value $hostManifest
 
-New-Item -Force -Path $edgePath | Out-Null
-Set-ItemProperty -Path $edgePath -Name "(Default)" -Value $hostManifest
-
-Write-OK "Native Messaging registered for Chrome and Edge"
+    Write-OK "Native Messaging registered for Chrome and Edge"
+} else {
+    Write-Warn "native-messaging-host.json not found - skipping Native Messaging registration"
+}
 
 # ---------------------------------------------------------------------------
 # 8. Force-install browser extension via Group Policy registry
 # ---------------------------------------------------------------------------
 Write-Step "Installing browser extension (Chrome + Edge)"
-$extEntry   = "${ExtensionId};file:///$InstallDir/extension.crx"
-$chromePol  = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
-$edgePol    = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+$extCrx = "$InstallDir\extension.crx"
+if (Test-Path $extCrx) {
+    $extEntry   = "${ExtensionId};file:///$InstallDir/extension.crx"
+    $chromePol  = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+    $edgePol    = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 
-foreach ($polPath in @($chromePol, $edgePol)) {
-    New-Item -Force -Path $polPath | Out-Null
-    # Find next available numeric key
-    $existing = (Get-ItemProperty -Path $polPath -ErrorAction SilentlyContinue).PSObject.Properties |
-                Where-Object { $_.Name -match '^\d+$' } |
-                ForEach-Object { [int]$_.Name }
-    $nextKey = if ($existing) { ($existing | Measure-Object -Maximum).Maximum + 1 } else { 1 }
-    Set-ItemProperty -Path $polPath -Name "$nextKey" -Value $extEntry
+    foreach ($polPath in @($chromePol, $edgePol)) {
+        New-Item -Force -Path $polPath | Out-Null
+        # Find next available numeric key
+        $existing = (Get-ItemProperty -Path $polPath -ErrorAction SilentlyContinue).PSObject.Properties |
+                    Where-Object { $_.Name -match '^\d+$' } |
+                    ForEach-Object { [int]$_.Name }
+        $nextKey = if ($existing) { ($existing | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+        Set-ItemProperty -Path $polPath -Name "$nextKey" -Value $extEntry
+    }
+    Write-OK "Extension force-list updated (ID: $ExtensionId)"
+} else {
+    Write-Warn "extension.crx not found - skipping browser extension install"
 }
-Write-OK "Extension force-list updated (ID: $ExtensionId)"
 
 # ---------------------------------------------------------------------------
 # 9. Start service — MachineId/UserId will be generated on first run
@@ -190,7 +199,7 @@ $svc = Get-Service -Name $ServiceName
 if ($svc.Status -eq "Running") {
     Write-OK "Service is running"
 } else {
-    Write-Warn "Service status: $($svc.Status) — check logs in $DataDir\logs"
+    Write-Warn "Service status: $($svc.Status) - check logs in $DataDir\logs"
 }
 
 # ---------------------------------------------------------------------------
@@ -202,5 +211,5 @@ Write-Host " Service  : $DisplayName ($ServiceName)"
 Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
 Write-Host " SMB share: $(if ($SharePath) { $SharePath } else { 'auto (domain Integrated Auth)' })"
-Write-Host " Discovery: DNS SRV _windiag._tcp.{domain} → DNS A windiag.{domain} → mDNS → UDP beacon"
+Write-Host " Discovery: DNS SRV _windiag._tcp.{domain} -> DNS A windiag.{domain} -> mDNS -> UDP beacon"
 Write-Host "========================================`n" -ForegroundColor Green
