@@ -5,10 +5,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
+COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-RUN chmod +x entrypoint.sh && mkdir -p /app/runtime
+# Copy API source and bootstrap module (shared library)
+COPY api/ .
+COPY bootstrap/ ./bootstrap/
+RUN chmod +x entrypoint.sh && mkdir -p /app/runtime /app/certs
 
 ENTRYPOINT ["./entrypoint.sh"]
