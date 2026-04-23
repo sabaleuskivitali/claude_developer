@@ -141,7 +141,7 @@ jobs:
         $pem = [System.Text.Encoding]::UTF8.GetString(
           [System.Convert]::FromBase64String($env:EXTENSION_PRIVATE_KEY)
         )
-        $pem | Set-Content tools/extension.pem -Encoding UTF8
+        $pem | Set-Content agent/tools/extension.pem -Encoding UTF8
         Write-Host "Private key decoded"
 
     # -------------------------------------------------------------------------
