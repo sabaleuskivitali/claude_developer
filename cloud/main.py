@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-DB_PATH = Path("/app/users.db")
+DB_PATH = Path("/app/data/users.db")
 
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
