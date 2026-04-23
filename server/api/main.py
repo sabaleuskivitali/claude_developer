@@ -3,7 +3,8 @@ import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -53,6 +54,23 @@ async def add_noindex(request, call_next):
 async def robots():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse("https://seamlean.com", status_code=302)
+
+
+@app.exception_handler(404)
+async def not_found(request: Request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": "This is the Seamlean agent API (machine use only).",
+            "website": "https://seamlean.com",
+        },
+    )
 
 
 app.include_router(events.router)
