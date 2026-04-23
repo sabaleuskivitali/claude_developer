@@ -25,7 +25,7 @@ async def post_heartbeat(hb: HeartbeatIn, request: Request):
         sequence_idx=-1,
         layer="agent",
         event_type="HeartbeatPulse",
-        payload=hb.model_dump(),
+        payload=hb.model_dump(mode="json"),
     )
     await request.app.state.event_queue.put(event)
 

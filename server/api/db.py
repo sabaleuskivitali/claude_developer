@@ -209,7 +209,7 @@ def _event_to_record(e: EventIn) -> tuple:
         e.case_id, e.screenshot_path, e.screenshot_dhash, e.capture_reason,
         e.log_source, e.log_level, e.raw_message, e.message_hash,
         e.document_path, e.document_name,
-        json.dumps(e.payload),
+        json.dumps(e.payload, default=str),
     )
 
 
@@ -274,6 +274,11 @@ class EventQueue:
             await bulk_insert_events(self._pool, batch)
 
     async def _worker(self):
+        import logging
+        logger = logging.getLogger(__name__)
         while True:
             await asyncio.sleep(self._flush_interval)
-            await self._flush()
+            try:
+                await self._flush()
+            except Exception as exc:
+                logger.error("EventQueue flush failed: %s", exc, exc_info=True)

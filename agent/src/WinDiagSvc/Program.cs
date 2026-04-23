@@ -20,6 +20,9 @@ if (NativeMessagingDetector.IsNativeMessagingHost())
     return;
 }
 
+// Snake_case column names → PascalCase properties (e.g. machine_id → MachineId)
+Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
+
 // UseWindowsService must be on the builder, before Build()
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(o => o.ServiceName = "WinDiagSvc");

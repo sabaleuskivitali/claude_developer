@@ -210,8 +210,9 @@ public sealed class HttpSyncWorker : BackgroundService
             var dbPath = _settings.ExpandedDbPath;
             using var conn = new SqliteConnection($"Data Source={dbPath};Pooling=False");
             conn.Open();
+            // sent=0: pending; sent=2: failed on previous cycle — retry both
             return conn.Query<ActivityEvent>(
-                "SELECT * FROM events WHERE sent=0 ORDER BY timestamp_utc LIMIT @Limit",
+                "SELECT * FROM events WHERE sent IN (0,2) ORDER BY timestamp_utc LIMIT @Limit",
                 new { Limit = limit }).ToList();
         }
         catch { return []; }
