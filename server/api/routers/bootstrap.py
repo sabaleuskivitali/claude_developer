@@ -169,14 +169,6 @@ async def get_pubkey():
     return {"pem": export_public_key_pem()}
 
 
-@router.get("/{profile_id}", dependencies=[Depends(require_api_key)])
-async def get_profile(profile_id: str, request: Request):
-    row = await store.get_by_id(request.app.state.db, profile_id)
-    if not row:
-        raise HTTPException(404, "Profile not found")
-    return row
-
-
 @router.get("/agents", dependencies=[Depends(require_api_key)])
 async def list_bootstrap_agents(request: Request):
     rows = await request.app.state.db.fetch(
@@ -187,3 +179,11 @@ async def list_bootstrap_agents(request: Request):
         """
     )
     return {"agents": [dict(r) for r in rows]}
+
+
+@router.get("/{profile_id}", dependencies=[Depends(require_api_key)])
+async def get_profile(profile_id: str, request: Request):
+    row = await store.get_by_id(request.app.state.db, profile_id)
+    if not row:
+        raise HTTPException(404, "Profile not found")
+    return row
