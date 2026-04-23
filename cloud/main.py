@@ -15,8 +15,8 @@ from pydantic import BaseModel
 app = FastAPI()
 
 PUBLIC_URL   = os.environ["PUBLIC_URL"].rstrip("/")
-DIAG_API     = os.environ.get("DIAG_API_URL", "https://api.seamlean.com")
-DIAG_KEY     = os.environ.get("DIAG_API_KEY", "")
+TEST_SERVER_URL = os.environ.get("TEST_SERVER_URL", "https://api.seamlean.com")
+TEST_SERVER_KEY = os.environ.get("TEST_SERVER_KEY", "")
 PROFILES_DIR = Path("/app/profiles")
 PROFILES_DIR.mkdir(exist_ok=True)
 DB_PATH      = Path("/app/users.db")
@@ -25,7 +25,7 @@ _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
 _ssl_ctx.verify_mode    = ssl.CERT_NONE
 
-BOOTSTRAP_URL = f"{DIAG_API}/api/v1/bootstrap/active"
+BOOTSTRAP_URL = f"{TEST_SERVER_URL}/api/v1/bootstrap/active"
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -82,8 +82,8 @@ def create_session(user_id: str) -> str:
 def _api_get(path: str):
     try:
         req = urllib.request.Request(
-            f"{DIAG_API}{path}",
-            headers={"X-Api-Key": DIAG_KEY},
+            f"{TEST_SERVER_URL}{path}",
+            headers={"X-Api-Key": TEST_SERVER_KEY},
         )
         with urllib.request.urlopen(req, context=_ssl_ctx, timeout=5) as r:
             return json.loads(r.read())
