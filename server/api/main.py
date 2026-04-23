@@ -8,7 +8,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import db, storage
-from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap, cabinet
+from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap
 
 def _read_version() -> str:
     for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
@@ -50,7 +50,6 @@ app.include_router(updates.router)
 app.include_router(agents.router)
 app.include_router(etl.router)
 app.include_router(bootstrap.router)
-app.include_router(cabinet.router)
 
 
 @app.get("/health")
