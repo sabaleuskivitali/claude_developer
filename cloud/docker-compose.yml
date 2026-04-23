@@ -1,0 +1,18 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    volumes:
+      - ./profiles:/app/profiles
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - api
+    restart: unless-stopped

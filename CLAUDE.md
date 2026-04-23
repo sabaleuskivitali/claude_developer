@@ -1,4 +1,6 @@
-# Task Mining Agent — Project Description
+# Seamlean — Project Description
+
+> **Только предприниматели — администрирование автономно**
 
 ## Git
 

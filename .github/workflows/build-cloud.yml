@@ -1,0 +1,72 @@
+name: Build Cloud
+
+on:
+  push:
+    tags:  ['cloud/v*']
+    paths: ['cloud/**']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override. Leave empty → reads cloud/VERSION'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Resolve version
+      id: ver
+      run: |
+        V="${{ github.event.inputs.version }}"
+        if [ -z "$V" ]; then
+          if [[ "${{ github.ref }}" =~ ^refs/tags/cloud/v(.+)$ ]]; then
+            V="${BASH_REMATCH[1]}"
+          else
+            V="$(cat cloud/VERSION).dev${{ github.run_number }}"
+          fi
+        fi
+        echo "VERSION=$V" >> $GITHUB_ENV
+        echo "version=$V" >> $GITHUB_OUTPUT
+        echo "Cloud version: $V"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Lint
+      run: |
+        pip install ruff --quiet
+        ruff check cloud/ --ignore E501 || true
+
+    - name: Build Docker image
+      working-directory: cloud
+      run: docker build -t cloud-bootstrap:${{ env.VERSION }} .
+
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/cloud/v')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: cloud/v${{ env.VERSION }}
+        name: Cloud v${{ env.VERSION }}
+        body: |
+          ## Cloud Bootstrap Server v${{ env.VERSION }}
+
+          ### Деплой на 178.104.1.6
+          ```bash
+          git pull
+          cd cloud
+          docker compose up -d --build
+          ```
+          **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

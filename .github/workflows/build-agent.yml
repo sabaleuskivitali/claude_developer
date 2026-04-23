@@ -1,13 +1,14 @@
-name: Build WinDiagSvc Installer
+name: Build Agent
 
 on:
   push:
     branches: [main]
-    tags:     ['v*']
+    tags:     ['agent/v*']
+    paths:    ['agent/**']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version override (e.g. 1.2.0). Leave empty → 1.0.<run_number>'
+        description: 'Version override (e.g. 1.2.0). Leave empty → reads agent/VERSION'
         required: false
         default: ''
 
@@ -34,10 +35,10 @@ jobs:
       run: |
         $v = "${{ github.event.inputs.version }}"
         if (-not $v) {
-          if ("${{ github.ref }}" -match '^refs/tags/v(.+)$') {
+          if ("${{ github.ref }}" -match '^refs/tags/agent/v(.+)$') {
             $v = $Matches[1]
           } else {
-            $v = "1.0.${{ github.run_number }}"
+            $v = (Get-Content agent/VERSION -Raw).Trim() + ".${{ github.run_number }}"
           }
         }
         echo "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -70,7 +71,7 @@ jobs:
     - name: Patch csproj version
       shell: pwsh
       run: |
-        $csproj = "src/WinDiagSvc/WinDiagSvc.csproj"
+        $csproj = "agent/src/WinDiagSvc/WinDiagSvc.csproj"
         $xml = [xml](Get-Content $csproj)
         $xml.Project.PropertyGroup.Version            = "${{ env.VERSION }}"
         $xml.Project.PropertyGroup.AssemblyVersion    = "${{ env.VERSION }}.0"
@@ -84,7 +85,7 @@ jobs:
     - name: Restore NuGet packages
       shell: pwsh
       run: |
-        $output = dotnet restore src/WinDiagSvc/WinDiagSvc.csproj -r win-x64 2>&1
+        $output = dotnet restore agent/src/WinDiagSvc/WinDiagSvc.csproj -r win-x64 2>&1
         $output | Write-Host
         if ($LASTEXITCODE -ne 0) {
           @"
@@ -103,7 +104,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path build | Out-Null
-        $output = dotnet publish src/WinDiagSvc/WinDiagSvc.csproj `
+        $output = dotnet publish agent/src/WinDiagSvc/WinDiagSvc.csproj `
           -c Release `
           -r win-x64 `
           --self-contained true `
@@ -150,14 +151,16 @@ jobs:
       shell: pwsh
       run: |
         # Copy unpacked extension first so we can patch its manifest.json with the key
-        Copy-Item browser-extension build/extension -Recurse -Force
+        Copy-Item agent/browser-extension build/extension -Recurse -Force
 
-        python tools/pack_extension.py `
-          --key             tools/extension.pem `
-          --src             browser-extension `
+        python agent/tools/pack_extension.py `
+          --key             agent/tools/extension.pem `
+          --src             agent/browser-extension `
           --output          build/extension.crx `
           --id-out          build/extension-id.txt `
           --patch-manifest  build/extension/manifest.json
+
+
 
         $id = Get-Content build/extension-id.txt
         echo "EXTENSION_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -177,7 +180,7 @@ jobs:
       shell: pwsh
       run: |
         $id  = "${{ env.EXTENSION_ID }}"
-        $src = Get-Content browser-extension/native-messaging-host.json -Raw | ConvertFrom-Json
+        $src = Get-Content agent/browser-extension/native-messaging-host.json -Raw | ConvertFrom-Json
         $src.allowed_origins = @("chrome-extension://$id/")
         # path will be patched to real install path by install script
         $src.path = "C:\Program Files\Windows Diagnostics\WinDiagSvc.exe"
@@ -190,7 +193,7 @@ jobs:
     - name: Copy build inputs
       shell: pwsh
       run: |
-        Copy-Item src/WinDiagSvc/appsettings.json build/appsettings.json
+        Copy-Item agent/src/WinDiagSvc/appsettings.json build/appsettings.json
 
     # -------------------------------------------------------------------------
     # 11. Download NSSM 2.24
@@ -200,7 +203,7 @@ jobs:
     - name: Generate installer script
       shell: pwsh
       run: |
-        python tools/make_installer.py `
+        python agent/tools/make_installer.py `
           --version           ${{ env.VERSION }} `
           --ext-id            ${{ env.EXTENSION_ID }} `
           --api-key           "${{ secrets.AGENT_API_KEY }}" `
@@ -219,7 +222,7 @@ jobs:
     # Copy WinDiagUpdater.ps1 into build/ so it's included in the artifact
     - name: Copy WinDiagUpdater.ps1
       shell: pwsh
-      run: Copy-Item installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
+      run: Copy-Item agent/installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
 
     # Note: unpacked extension already copied + manifest key patched in "Pack Chrome extension" step
 
@@ -229,7 +232,7 @@ jobs:
     - name: Wipe private key
       if: always()
       shell: pwsh
-      run: Remove-Item tools/extension.pem -ErrorAction SilentlyContinue
+      run: Remove-Item agent/tools/extension.pem -ErrorAction SilentlyContinue
 
     # -------------------------------------------------------------------------
     # 14. Upload installer artifact (zip of all files — extract and run PS1)
@@ -305,10 +308,10 @@ jobs:
     # 17. Create GitHub Release (only on tag push or manual with version)
     # -------------------------------------------------------------------------
     - name: Create GitHub Release
-      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+      if: startsWith(github.ref, 'refs/tags/agent/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v${{ env.VERSION }}
+        tag_name: agent/v${{ env.VERSION }}
         name: WinDiagSvc v${{ env.VERSION }}
         body: |
           ## Установка
