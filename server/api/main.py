@@ -63,6 +63,11 @@ async def root():
 
 @app.exception_handler(404)
 async def not_found(request: Request, exc):
+    # Pass through 404s raised inside API routes (they have meaningful detail)
+    if request.url.path.startswith("/api/"):
+        from fastapi.responses import JSONResponse as _J
+        detail = getattr(exc, "detail", "Not Found")
+        return _J(status_code=404, content={"detail": detail})
     return JSONResponse(
         status_code=404,
         content={
