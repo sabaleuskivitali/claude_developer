@@ -618,11 +618,10 @@ if [ -n "$INSTALL_TOKEN" ]; then
   if [ -z "$PUBLIC_IP" ]; then
     PUBLIC_IP=$(hostname -I | awk '{print $1}')
   fi
-  SERVER_URL="https://${PUBLIC_IP}:49200"
+  # Use standard HTTPS port 443 (nginx proxies 443 → 49200)
+  SERVER_URL="https://${PUBLIC_IP}"
   # Write SERVER_URL to .env so the bootstrap generator can use it
-  if ! grep -q '^SERVER_URL=' .env; then
-    echo "SERVER_URL=${SERVER_URL}" >> .env
-  fi
+  sed -i "s|^SERVER_URL=.*|SERVER_URL=${SERVER_URL}|" .env
   API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
 
   echo "Registering server with Seamlean cloud..."

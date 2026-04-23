@@ -64,6 +64,16 @@ services:
       minio:
         condition: service_healthy
 
+  nginx:
+    image: nginx:alpine
+    container_name: ${SERVER_NAME}_nginx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./nginx/stream.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
   etl:
     build:
       context: .
