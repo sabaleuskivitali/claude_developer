@@ -23,6 +23,9 @@ if (NativeMessagingDetector.IsNativeMessagingHost())
 // Snake_case column names → PascalCase properties (e.g. machine_id → MachineId)
 Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
+// Microsoft.Data.Sqlite stores GUIDs as TEXT; Dapper needs a handler to parse them back.
+Dapper.SqlMapper.AddTypeHandler(new GuidTypeHandler());
+
 // UseWindowsService must be on the builder, before Build()
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(o => o.ServiceName = "WinDiagSvc");
@@ -143,4 +146,13 @@ static void EnsureIdentity(AgentSettings settings)
 
     settings.MachineId = machineId;
     settings.UserId    = userId;
+}
+
+// Microsoft.Data.Sqlite stores GUIDs as TEXT; Dapper needs a handler to parse them back.
+sealed class GuidTypeHandler : Dapper.SqlMapper.TypeHandler<Guid>
+{
+    public override void SetValue(System.Data.IDbDataParameter parameter, Guid value)
+        => parameter.Value = value.ToString();
+    public override Guid Parse(object value)
+        => Guid.Parse(value.ToString()!);
 }

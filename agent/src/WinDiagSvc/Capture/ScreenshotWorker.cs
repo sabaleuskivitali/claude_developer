@@ -15,7 +15,7 @@ public sealed class ScreenshotWorker : BackgroundService
     private readonly AgentSettings _settings;
     private readonly ILogger<ScreenshotWorker> _logger;
 
-    private ulong _lastDHash;
+    private long _lastDHash;
 
     public ScreenshotWorker(
         EventStore store,
@@ -189,19 +189,19 @@ public sealed class ScreenshotWorker : BackgroundService
         }
     }
 
-    private static ulong ComputeDHash(SKBitmap bmp)
+    private static long ComputeDHash(SKBitmap bmp)
     {
         using var small = bmp.Resize(new SKImageInfo(9, 8), SKFilterQuality.Low);
-        ulong hash = 0;
+        long hash = 0;
         for (var y = 0; y < 8; y++)
             for (var x = 0; x < 8; x++)
                 if (small.GetPixel(x, y).Red > small.GetPixel(x + 1, y).Red)
-                    hash |= 1UL << (y * 8 + x);
+                    hash |= 1L << (y * 8 + x);
         return hash;
     }
 
-    private static int HammingDistance(ulong a, ulong b) =>
-        BitOperations.PopCount(a ^ b);
+    private static int HammingDistance(long a, long b) =>
+        BitOperations.PopCount((ulong)(a ^ b));
 
     private void WriteLayerError(Exception ex) =>
         _store.Insert(new ActivityEvent

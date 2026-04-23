@@ -47,7 +47,7 @@ public sealed record ActivityEvent
 
     // Screenshot (layer B)
     public string? ScreenshotPath  { get; init; }
-    public ulong   ScreenshotDHash { get; init; }
+    public long    ScreenshotDHash { get; init; }
     public string? CaptureReason   { get; init; }
 
     // Vision AI (populated by server)

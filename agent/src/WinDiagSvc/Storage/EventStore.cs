@@ -147,7 +147,7 @@ public sealed class EventStore : IDisposable
                     ElementAutomationId = ev.ElementAutomationId,
                     CaseId = ev.CaseId,
                     ev.ScreenshotPath,
-                    ScreenshotDHash = (long)ev.ScreenshotDHash,
+                    ev.ScreenshotDHash,
                     ev.CaptureReason,
                     ev.LogSource,
                     ev.LogLevel,
@@ -158,6 +158,25 @@ public sealed class EventStore : IDisposable
                     Payload = json,
                 });
         }
+    }
+
+    public List<ActivityEvent> ReadPending(int limit)
+    {
+        lock (_writeLock)
+            return _conn.Query<ActivityEvent>(
+                "SELECT * FROM events WHERE sent IN (0,2) ORDER BY timestamp_utc LIMIT @Limit",
+                new { Limit = limit }).ToList();
+    }
+
+    public void MarkSent(List<string> eventIds, int status)
+    {
+        if (eventIds.Count == 0) return;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var ids  = string.Join(",", eventIds.Select(id => $"'{id}'"));
+        lock (_writeLock)
+            _conn.Execute(
+                $"UPDATE events SET sent=@S, sent_at=@At WHERE LOWER(event_id) IN ({ids.ToLower()})",
+                new { S = status, At = now });
     }
 
     public int CountPending()

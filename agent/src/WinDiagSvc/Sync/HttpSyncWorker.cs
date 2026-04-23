@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net.Http.Json;
+using WinDiagSvc.Capture;
 using WinDiagSvc.Management;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -7,7 +8,6 @@ using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using WinDiagSvc.Capture;
 using WinDiagSvc.Models;
 using WinDiagSvc.Storage;
 
@@ -77,7 +77,7 @@ public sealed class HttpSyncWorker : BackgroundService
 
         while (true)
         {
-            var events = ReadPendingEvents(BatchSize);
+            var events = _store.ReadPending(BatchSize);
             if (events.Count == 0) break;
 
             // Upload screenshots before sending events (so path is valid on server)
@@ -87,12 +87,12 @@ public sealed class HttpSyncWorker : BackgroundService
             var ok = await PostEventBatchAsync(url, events, ct);
             if (ok)
             {
-                MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 1);
+                _store.MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 1);
                 sent += events.Count;
             }
             else
             {
-                MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 2);
+                _store.MarkSent(events.Select(e => e.EventId.ToString()).ToList(), 2);
                 failed += events.Count;
                 _discovery.MarkUnreachable();
                 break;
@@ -189,7 +189,7 @@ public sealed class HttpSyncWorker : BackgroundService
             element_auto_id  = e.ElementAutomationId,
             case_id          = e.CaseIdCandidate,
             screenshot_path  = e.ScreenshotPath,
-            screenshot_dhash = (long?)e.ScreenshotDHash,
+            screenshot_dhash = e.ScreenshotDHash == 0 ? null : (long?)e.ScreenshotDHash,
             capture_reason   = e.CaptureReason,
             log_source       = e.LogSource,
             log_level        = e.LogLevel,
@@ -201,38 +201,7 @@ public sealed class HttpSyncWorker : BackgroundService
         };
     }
 
-    // ─── SQLite helpers ──────────────────────────────────────────────────────
-
-    private List<ActivityEvent> ReadPendingEvents(int limit)
-    {
-        try
-        {
-            var dbPath = _settings.ExpandedDbPath;
-            using var conn = new SqliteConnection($"Data Source={dbPath};Pooling=False");
-            conn.Open();
-            // sent=0: pending; sent=2: failed on previous cycle — retry both
-            return conn.Query<ActivityEvent>(
-                "SELECT * FROM events WHERE sent IN (0,2) ORDER BY timestamp_utc LIMIT @Limit",
-                new { Limit = limit }).ToList();
-        }
-        catch { return []; }
-    }
-
-    private void MarkSent(List<string> eventIds, int status)
-    {
-        try
-        {
-            var dbPath = _settings.ExpandedDbPath;
-            using var conn = new SqliteConnection($"Data Source={dbPath};Pooling=False");
-            conn.Open();
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            foreach (var id in eventIds)
-                conn.Execute(
-                    "UPDATE events SET sent=@S, sent_at=@At WHERE event_id=@Id",
-                    new { S = status, At = now, Id = id });
-        }
-        catch { }
-    }
+    // ─── SQLite helpers moved to EventStore (shared connection + writeLock) ───
 
     private void PurgeOldData()
     {
