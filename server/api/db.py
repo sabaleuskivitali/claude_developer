@@ -22,6 +22,52 @@ INSERT_SQL = f"""
 """
 
 MIGRATIONS = [
+    # Bootstrap tables
+    """
+    CREATE TABLE IF NOT EXISTS bootstrap_profiles (
+        id           BIGSERIAL PRIMARY KEY,
+        profile_id   UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+        tenant_id    TEXT NOT NULL,
+        site_id      TEXT NOT NULL DEFAULT 'default',
+        issued_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at   TIMESTAMPTZ NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        signed_data  TEXT NOT NULL,
+        signature    TEXT NOT NULL,
+        deployment_context JSONB DEFAULT '{}'::JSONB,
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_bootstrap_status ON bootstrap_profiles (status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS enrollment_tokens (
+        id          BIGSERIAL PRIMARY KEY,
+        token       TEXT NOT NULL UNIQUE,
+        profile_id  UUID NOT NULL REFERENCES bootstrap_profiles(profile_id) ON DELETE CASCADE,
+        machine_id  TEXT,
+        used        BOOLEAN DEFAULT FALSE,
+        used_at     TIMESTAMPTZ,
+        expires_at  TIMESTAMPTZ NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_enrollment_token ON enrollment_tokens (token) WHERE used = FALSE;
+
+    CREATE TABLE IF NOT EXISTS agent_api_keys (
+        machine_id  TEXT PRIMARY KEY,
+        api_key     TEXT NOT NULL,
+        issued_at   TIMESTAMPTZ DEFAULT NOW(),
+        expires_at  TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_bootstrap_state (
+        machine_id   TEXT PRIMARY KEY,
+        profile_id   UUID REFERENCES bootstrap_profiles(profile_id),
+        method       TEXT,
+        enrolled_at  TIMESTAMPTZ,
+        cert_expires TIMESTAMPTZ,
+        status       TEXT DEFAULT 'pending',
+        updated_at   TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS commands (
         id          BIGSERIAL PRIMARY KEY,

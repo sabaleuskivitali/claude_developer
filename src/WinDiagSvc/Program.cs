@@ -1,4 +1,5 @@
 using NReco.Logging.File;
+using WinDiagSvc.Bootstrap;
 using WinDiagSvc.Browser;
 using WinDiagSvc.Capture;
 using WinDiagSvc.Capture.AppLogScanner;
@@ -25,6 +26,12 @@ builder.Services.AddWindowsService(o => o.ServiceName = "WinDiagSvc");
 
 builder.Services.Configure<AgentSettings>(
     builder.Configuration.GetSection("AgentSettings"));
+
+// Bootstrap — must run before any service that connects to the server
+builder.Services.AddSingleton<CascadeResolver>();
+builder.Services.AddSingleton<EnrollmentClient>();
+builder.Services.AddSingleton<BootstrapService>();
+builder.Services.AddHostedService<ReEnrollmentService>();
 
 // Storage — singleton: one connection for all layers
 builder.Services.AddSingleton<LayerHealthTracker>();
@@ -90,6 +97,14 @@ using (var scope = host.Services.CreateScope())
     var settings = scope.ServiceProvider
         .GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentSettings>>().Value;
     EnsureIdentity(settings);
+}
+
+// Run bootstrap cascade before any service connects to the server.
+// If ServerUrl is already set in appsettings.json, this is a no-op.
+using (var scope = host.Services.CreateScope())
+{
+    var bootstrap = scope.ServiceProvider.GetRequiredService<BootstrapService>();
+    await bootstrap.RunBootstrapAsync();
 }
 
 // Wire screenshot triggers between layers (fixes CS0649 warnings)

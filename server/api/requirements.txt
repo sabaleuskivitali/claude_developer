@@ -6,3 +6,5 @@ python-multipart==0.0.12
 minio==7.2.9
 pydantic==2.9.0
 slowapi==0.1.9
+cryptography==42.0.8
+zeroconf==0.131.0

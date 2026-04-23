@@ -378,6 +378,142 @@ def cmd_etl(_args):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+# ── bootstrap ─────────────────────────────────────────────────────────────────
+
+def cmd_bootstrap(args):
+    sub = args.bootstrap_sub
+
+    if sub == "generate":
+        _bootstrap_generate(args)
+    elif sub == "approve":
+        _bootstrap_approve(args)
+    elif sub == "publish":
+        _bootstrap_publish(args)
+    elif sub == "revoke":
+        _bootstrap_revoke(args)
+    elif sub == "status":
+        _bootstrap_status(args)
+    elif sub == "export-pubkey":
+        _bootstrap_export_pubkey()
+
+
+def _bootstrap_generate(args):
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).parent / "api"))
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from bootstrap.scanner import build_context
+    from bootstrap.generator import generate_profile
+    from bootstrap.crypto import sign_profile
+
+    server_url = args.server_url or os.environ.get("SERVER_URL", "")
+    tenant_id  = args.tenant_id  or os.environ.get("TENANT_ID", "default")
+    site_id    = args.site_id    or "default"
+
+    ctx    = build_context(server_url=server_url, tenant_id=tenant_id, site_id=site_id)
+    signed = generate_profile(ctx)
+
+    conn = connect()
+    with conn.cursor() as cur:
+        profile = signed.get_profile()
+        cur.execute(
+            """
+            INSERT INTO bootstrap_profiles
+                (tenant_id, site_id, expires_at, status, signed_data, signature, deployment_context)
+            VALUES (%s, %s, %s::TIMESTAMPTZ, 'pending', %s, %s, %s::JSONB)
+            RETURNING profile_id::TEXT
+            """,
+            (profile.tenant_id, profile.site_id, profile.expires_at,
+             signed.signed_data, signed.signature, ctx.model_dump_json()),
+        )
+        row = cur.fetchone()
+        # Store enrollment token
+        cur.execute(
+            "INSERT INTO enrollment_tokens (token, profile_id, expires_at) VALUES (%s, %s::UUID, %s::TIMESTAMPTZ)",
+            (profile.enrollment.token, row["profile_id"], profile.enrollment.expires_at),
+        )
+    conn.commit()
+    print(f"Profile generated: {row['profile_id']}")
+    print(f"Status : pending")
+    print(f"Context: AD={ctx.has_ad} L2={ctx.l2_reachable} internet={ctx.has_internet}")
+    print(f"Server : {profile.endpoints.primary}")
+    print(f"Expires: {profile.expires_at}")
+    print()
+    print("Next: python manage.py bootstrap approve " + row["profile_id"])
+
+
+def _bootstrap_approve(args):
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bootstrap_profiles SET status='approved' WHERE profile_id=%s::UUID AND status='pending' RETURNING profile_id",
+            (args.profile_id,),
+        )
+        if not cur.fetchone():
+            print("Profile not found or not in pending state")
+            return
+    conn.commit()
+    print(f"Profile {args.profile_id[:8]}... approved")
+    print(f"Next: python manage.py bootstrap publish {args.profile_id}")
+
+
+def _bootstrap_publish(args):
+    conn = connect()
+    with conn.cursor() as cur:
+        # Expire any currently active profiles
+        cur.execute(
+            "UPDATE bootstrap_profiles SET status='expired' WHERE status IN ('published','active') AND profile_id != %s::UUID",
+            (args.profile_id,),
+        )
+        cur.execute(
+            "UPDATE bootstrap_profiles SET status='active' WHERE profile_id=%s::UUID AND status='approved' RETURNING profile_id",
+            (args.profile_id,),
+        )
+        if not cur.fetchone():
+            print("Profile not found or not in approved state")
+            return
+    conn.commit()
+    print(f"Profile {args.profile_id[:8]}... is now ACTIVE")
+    print("Agents will receive this profile on next bootstrap resolution.")
+
+
+def _bootstrap_revoke(args):
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bootstrap_profiles SET status='revoked' WHERE profile_id=%s::UUID",
+            (args.profile_id,),
+        )
+    conn.commit()
+    print(f"Profile {args.profile_id[:8]}... revoked")
+
+
+def _bootstrap_status(args):
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT profile_id::TEXT, tenant_id, site_id, status, expires_at, created_at FROM bootstrap_profiles ORDER BY created_at DESC LIMIT 10"
+        )
+        rows = cur.fetchall()
+    if not rows:
+        print("No bootstrap profiles found.")
+        return
+    print(f"{'PROFILE_ID':<38} {'STATUS':<10} {'EXPIRES':<25} {'TENANT'}")
+    print("-" * 90)
+    for r in rows:
+        print(f"{r['profile_id']:<38} {r['status']:<10} {str(r['expires_at'])[:19]:<25} {r['tenant_id']}")
+
+
+def _bootstrap_export_pubkey():
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).parent / "api"))
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from bootstrap.crypto import export_public_key_pem
+    print(export_public_key_pem())
+    print()
+    print("# Embed the PEM above in src/WinDiagSvc/Bootstrap/ProfileVerifier.cs")
+    print("# Replace the REPLACE_WITH_SERVER_CA_PUBLIC_KEY_PEM placeholder.")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="manage.py")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -424,6 +560,22 @@ def main():
     # etl
     sub.add_parser("etl")
 
+    # bootstrap
+    p = sub.add_parser("bootstrap")
+    bs = p.add_subparsers(dest="bootstrap_sub", required=True)
+    g = bs.add_parser("generate")
+    g.add_argument("--server-url", default="")
+    g.add_argument("--tenant-id",  default="")
+    g.add_argument("--site-id",    default="default")
+    ap = bs.add_parser("approve")
+    ap.add_argument("profile_id")
+    pb = bs.add_parser("publish")
+    pb.add_argument("profile_id")
+    rv = bs.add_parser("revoke")
+    rv.add_argument("profile_id")
+    bs.add_parser("status")
+    bs.add_parser("export-pubkey")
+
     args = parser.parse_args()
     {
         "status":         cmd_status,
@@ -435,6 +587,7 @@ def main():
         "update-config":  cmd_update_config,
         "perf":           cmd_perf,
         "etl":            cmd_etl,
+        "bootstrap":      cmd_bootstrap,
     }[args.cmd](args)
 
 

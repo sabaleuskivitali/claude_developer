@@ -16,10 +16,14 @@
 # or DNS A record (windiag.{domain}). IT adds one DNS record — no IPs in installer.
 
 param(
-    [Parameter(Mandatory)][string]$ApiKey,
-    [string]$SharePath  = "",
-    [string]$ShareUser  = "",
-    [string]$SharePass  = ""
+    [string]$ApiKey              = "",
+    [string]$SharePath           = "",
+    [string]$ShareUser           = "",
+    [string]$SharePass           = "",
+    # Bootstrap cascade: provide either a pre-generated profile file or a download URL.
+    # If neither is supplied, the agent will attempt DNS-SD / mDNS auto-discovery at runtime.
+    [string]$BootstrapProfilePath = "",  # path to bootstrap_profile.json (offline package)
+    [string]$BootstrapProfileUrl  = ""   # HTTPS URL to fetch SignedBootstrapProfile JSON
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,11 +66,32 @@ Write-OK "Files copied"
 Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-$cfg.AgentSettings.ApiKey     = $ApiKey
+if ($ApiKey)    { $cfg.AgentSettings.ApiKey    = $ApiKey }
 if ($SharePath) { $cfg.AgentSettings.SharePath = $SharePath }
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-Write-OK "ApiKey    = $($ApiKey.Substring(0,8))..."
+if ($ApiKey)    { Write-OK "ApiKey    = $($ApiKey.Substring(0,8))..." }
 if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath — will use domain Integrated Auth" }
+
+# ---------------------------------------------------------------------------
+# 3b. Bootstrap profile — written to registry for CascadeResolver (priority 1)
+# ---------------------------------------------------------------------------
+Write-Step "Bootstrap profile"
+if ($BootstrapProfilePath -and (Test-Path $BootstrapProfilePath)) {
+    $profileJson = Get-Content $BootstrapProfilePath -Raw
+    $regPath = "HKLM:\SOFTWARE\WinDiagSvc\Bootstrap"
+    New-Item -Force -Path $regPath | Out-Null
+    Set-ItemProperty -Path $regPath -Name "ProfileJson" -Value $profileJson
+    Write-OK "Bootstrap profile written to registry from $BootstrapProfilePath"
+}
+elseif ($BootstrapProfileUrl) {
+    $regPath = "HKLM:\SOFTWARE\WinDiagSvc\Bootstrap"
+    New-Item -Force -Path $regPath | Out-Null
+    Set-ItemProperty -Path $regPath -Name "ProfileUrl" -Value $BootstrapProfileUrl
+    Write-OK "Bootstrap profile URL written to registry: $BootstrapProfileUrl"
+}
+else {
+    Write-OK "No bootstrap profile supplied — agent will use DNS-SD discovery at runtime"
+}
 
 # ---------------------------------------------------------------------------
 # 4. Defender exclusions
