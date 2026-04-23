@@ -9,8 +9,8 @@ public static class ProfileVerifier
     // This is the ONLY root of trust for bootstrap profiles — never fetch this key at runtime.
     private const string CaPublicKeyPem = """
         -----BEGIN PUBLIC KEY-----
-        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmV0gDzsjNizM4laUV9xClSuU/VYb
-        SSeYLl8R+Up3K8prWpqb0SxtBGtT5rI5GBvbwk2cSkPmf1tfEmmynaqi8A==
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3cBkSYtXy/E9U6riCq5e7IhSws+7
+        KkYqLfWaZAcAP08XNcrBDsYaNMBtYs6ZNSIBWMiaGEIaAKAKsYWMMJTZBw==
         -----END PUBLIC KEY-----
         """;
 
