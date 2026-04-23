@@ -15,6 +15,7 @@ Usage:
   python manage.py update-config <machine_id> --set KEY=VALUE
   python manage.py perf [<machine_id>] [--warnings]
   python manage.py etl
+  python manage.py deploy
 """
 
 import argparse
@@ -380,6 +381,19 @@ def cmd_etl(_args):
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 
+def cmd_deploy(_args):
+    import subprocess, pathlib
+    root = pathlib.Path(__file__).parent.parent
+    compose_dir = pathlib.Path(__file__).parent
+    for cmd in [
+        ["git", "-C", str(root), "pull"],
+        ["docker", "compose", "-f", str(compose_dir / "docker-compose.yml"), "build", "--no-cache"],
+        ["docker", "compose", "-f", str(compose_dir / "docker-compose.yml"), "up", "-d"],
+    ]:
+        print("$", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+
+
 def cmd_bootstrap(args):
     sub = args.bootstrap_sub
 
@@ -560,6 +574,9 @@ def main():
     # etl
     sub.add_parser("etl")
 
+    # deploy
+    sub.add_parser("deploy")
+
     # bootstrap
     p = sub.add_parser("bootstrap")
     bs = p.add_subparsers(dest="bootstrap_sub", required=True)
@@ -588,6 +605,7 @@ def main():
         "perf":           cmd_perf,
         "etl":            cmd_etl,
         "bootstrap":      cmd_bootstrap,
+        "deploy":         cmd_deploy,
     }[args.cmd](args)
 
 
