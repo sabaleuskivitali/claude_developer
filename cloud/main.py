@@ -345,10 +345,16 @@ async def register_server(request: Request):
     try:
         data = await request.json()
         install_token = data.get("token", "")
-        server_url    = data.get("server_url", "").rstrip("/")
         api_key       = data.get("api_key", "")
         server_name   = data.get("server_name", "Мой сервер")
-        if not all([install_token, server_url, api_key]):
+        # server_url determined from connecting IP — Cloudflare passes real IP
+        client_ip = (
+            request.headers.get("CF-Connecting-IP") or
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or
+            request.client.host
+        )
+        server_url = f"https://{client_ip}:443"
+        if not all([install_token, api_key]):
             return {"ok": False, "error": "Missing fields"}
         conn = sqlite3.connect(DB_PATH)
         row = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
@@ -530,8 +536,13 @@ set -euo pipefail
 REPO="https://github.com/sabaleuskivitali/claude_developer.git"
 INSTALL_DIR="/opt/seamlean"
 INSTALL_TOKEN=""
-# Server name = hostname of the machine (auto, no hardcode)
-SERVER_NAME=$(hostname -s 2>/dev/null || hostname)
+# Server name: Windows/DNS domain first, fallback to hostname
+_DOMAIN=$(hostname -d 2>/dev/null | grep -v '(none)' | grep -v '^$' || true)
+if [ -n "$_DOMAIN" ]; then
+  SERVER_NAME="$(hostname -s).${_DOMAIN}"
+else
+  SERVER_NAME=$(hostname -s 2>/dev/null || hostname)
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -617,27 +628,13 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  # Auto-detect public URL:
-  # 1. Cloudflared quick tunnel URL (if cloudflared is running)
-  # 2. Public IP:443 fallback (for on-premises / direct NAT)
-  SERVER_URL=""
-  if command -v cloudflared &>/dev/null; then
-    CF_URL=$(cloudflared tunnel info 2>/dev/null | grep -oP 'https://[^\s]+\.cfargotunnel\.com' | head -1)
-    [ -n "$CF_URL" ] && SERVER_URL="$CF_URL"
-  fi
-  if [ -z "$SERVER_URL" ]; then
-    PUBLIC_IP=$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
-    [ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(hostname -I | awk '{print $1}')
-    SERVER_URL="https://${PUBLIC_IP}:443"
-  fi
-  # Write SERVER_URL to .env so the bootstrap generator can use it
-  sed -i "s|^SERVER_URL=.*|SERVER_URL=${SERVER_URL}|" .env 2>/dev/null || echo "SERVER_URL=${SERVER_URL}" >> .env
   API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
 
+  # server_url is determined by cloud from CF-Connecting-IP header
   echo "Registering server with Seamlean cloud..."
   RESP=$(curl -sf -X POST "https://seamlean.com/api/register-server" \
     -H "Content-Type: application/json" \
-    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_url\":\"${SERVER_URL}\",\"api_key\":\"${API_KEY_VAL}\",\"server_name\":\"${SERVER_NAME}\"}" \
+    -d "{\"token\":\"${INSTALL_TOKEN}\",\"api_key\":\"${API_KEY_VAL}\",\"server_name\":\"${SERVER_NAME}\"}" \
     2>/dev/null || echo '{"ok":false}')
 
   if echo "$RESP" | grep -q '"ok":true'; then
@@ -649,7 +646,7 @@ fi
 
 echo ""
 echo "=== ✅ Seamlean server installed ==="
-echo "API: ${SERVER_URL:-https://$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || hostname -I | awk '{print $1}'):443}"
+echo "API port: 49200 (LAN) / api.seamlean.com (WAN via Cloudflare Tunnel)"
 echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
 """
 
