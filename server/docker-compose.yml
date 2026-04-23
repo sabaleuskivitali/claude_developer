@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: diag_postgres
+    container_name: ${SERVER_NAME}_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-diag}
@@ -20,7 +20,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: diag_minio
+    container_name: ${SERVER_NAME}_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -41,7 +41,7 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
-    container_name: diag_api
+    container_name: ${SERVER_NAME}_api
     restart: unless-stopped
     network_mode: host
     environment:
@@ -68,7 +68,7 @@ services:
     build:
       context: .
       dockerfile: etl/Dockerfile
-    container_name: diag_etl
+    container_name: ${SERVER_NAME}_etl
     restart: unless-stopped
     environment:
       POSTGRES_DSN:        postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-diag}
