@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from auth import require_api_key
+from auth import require_agent_key
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_agent_key)])
 
 _PACKAGES_DIR = Path(os.environ.get("UPDATE_PACKAGES_DIR", "/updates"))
 
