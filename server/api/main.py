@@ -9,7 +9,13 @@ from slowapi.errors import RateLimitExceeded
 import db, storage
 from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap
 
-limiter = Limiter(key_func=get_remote_address, default_limits=[])
+# 300/min per IP: handles up to ~75 agents behind one corporate NAT (each agent = ~4 req/min).
+# Global 2000/sec: absorbs bursts from thousands of agents without false-positives.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["300/minute"],
+    application_limits=["2000/second"],
+)
 
 
 @asynccontextmanager
@@ -39,6 +45,7 @@ app.include_router(bootstrap.router)
 
 
 @app.get("/health")
+@limiter.limit("10/minute")
 async def health(request: Request):
     checks = {}
     status = "ok"
