@@ -13,9 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-DIAG_API = os.environ.get("DIAG_API_URL", "https://api.seamlean.com")
-DIAG_KEY = os.environ.get("DIAG_API_KEY", "")
-DB_PATH  = Path("/app/users.db")
+DB_PATH = Path("/app/users.db")
 
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
@@ -28,6 +26,7 @@ def init_db():
         id TEXT PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         pwd_hash TEXT NOT NULL,
+        install_token TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
@@ -35,12 +34,27 @@ def init_db():
         user_id TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS servers (
+        user_id TEXT PRIMARY KEY,
+        server_url TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        server_name TEXT DEFAULT 'Мой сервер',
+        registered_at TEXT DEFAULT (datetime('now'))
+    )""")
     conn.commit()
+    # migrate: add install_token if column missing
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN install_token TEXT")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 
 init_db()
 
+
+# ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _db_user_by_session(token: str):
     if not token:
@@ -58,11 +72,35 @@ def _hash(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
-def _api(path: str):
+def _get_install_token(user_id: str) -> str:
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT install_token FROM users WHERE id=?", (user_id,)).fetchone()
+    if row and row[0]:
+        conn.close()
+        return row[0]
+    token = uuid.uuid4().hex
+    conn.execute("UPDATE users SET install_token=? WHERE id=?", (token, user_id))
+    conn.commit()
+    conn.close()
+    return token
+
+
+def _get_user_server(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT server_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
+    ).fetchone()
+    conn.close()
+    return {"server_url": row[0], "api_key": row[1], "server_name": row[2]} if row else None
+
+
+# ── API helpers ───────────────────────────────────────────────────────────────
+
+def _api(server_url: str, api_key: str, path: str):
     try:
         req = urllib.request.Request(
-            f"{DIAG_API}{path}",
-            headers={"X-Api-Key": DIAG_KEY},
+            f"{server_url.rstrip('/')}{path}",
+            headers={"X-Api-Key": api_key, "User-Agent": "Seamlean-Cloud/1.0"},
         )
         with urllib.request.urlopen(req, context=_ssl_ctx, timeout=5) as r:
             return json.loads(r.read())
@@ -89,7 +127,6 @@ input:focus{border-color:#4f46e5}
 .btn{display:inline-block;padding:10px 20px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:.94rem;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
 .btn:hover{opacity:.88}
 .btn-block{display:block;width:100%;text-align:center;margin-top:16px}
-.btn-green{background:#059669}
 .btn-gray{background:#e5e7eb;color:#374151}
 .link{text-align:center;margin-top:14px;font-size:.88rem;color:#666}
 .link a{color:#4f46e5;text-decoration:none;font-weight:600}
@@ -119,6 +156,7 @@ tr:last-child td{border-bottom:none}
 .feature-icon{font-size:1.4rem;margin-bottom:.6rem}
 .feature-title{font-weight:600;margin-bottom:.4rem}
 .feature-text{font-size:.86rem;color:#666}
+.hint{font-size:.78rem;color:#9ca3af;margin-top:6px}
 """
 
 _JS = """
@@ -296,6 +334,34 @@ def logout(request: Request):
     return resp
 
 
+# ── Server registration (called by install.sh) ────────────────────────────────
+
+@app.post("/api/register-server")
+async def register_server(request: Request):
+    try:
+        data = await request.json()
+        install_token = data.get("token", "")
+        server_url    = data.get("server_url", "").rstrip("/")
+        api_key       = data.get("api_key", "")
+        server_name   = data.get("server_name", "Мой сервер")
+        if not all([install_token, server_url, api_key]):
+            return {"ok": False, "error": "Missing fields"}
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
+        if not row:
+            conn.close()
+            return {"ok": False, "error": "Invalid token"}
+        conn.execute(
+            "INSERT OR REPLACE INTO servers(user_id,server_url,api_key,server_name) VALUES(?,?,?,?)",
+            (row[0], server_url, api_key, server_name)
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ── Cabinet ───────────────────────────────────────────────────────────────────
 
 _LAYER_LABELS = {"window": "Окна", "visual": "Скрины", "system": "Система",
@@ -313,21 +379,24 @@ def _layers_html(layer_stats) -> str:
         ls = stats.get(key)
         if ls is None:
             continue
-        cls = "layer-err" if (ls.get("errors_5min") or 0) > 0 else "layer-ok"
-        parts.append(f'<span style="background:{"#fee2e2" if cls=="layer-err" else "#d1fae5"};color:{"#991b1b" if cls=="layer-err" else "#065f46"};padding:1px 5px;border-radius:4px;font-size:.74rem;font-weight:600;margin-right:2px">{label}</span>')
+        err = (ls.get("errors_5min") or 0) > 0
+        bg  = "#fee2e2" if err else "#d1fae5"
+        col = "#991b1b" if err else "#065f46"
+        parts.append(f'<span style="background:{bg};color:{col};padding:1px 5px;border-radius:4px;font-size:.74rem;font-weight:600;margin-right:2px">{label}</span>')
     return "".join(parts) or "—"
 
 
 def _agent_rows(agents) -> str:
     if not agents:
-        return '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px">Агентов нет. Установите первого с помощью ссылки выше.</td></tr>'
+        return '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px">Агентов нет. Установите первого с помощью команды выше.</td></tr>'
     rows = ""
     for a in agents:
-        lag = a.get("lag_sec", 0)
+        lag   = a.get("lag_sec", 0)
         drift = a.get("drift_ms")
-        st = a.get("status", "offline")
-        last = f"{lag}с" if lag < 60 else (f"{lag//60}м" if lag < 3600 else f"{lag//3600}ч")
-        drift_s = f'<span style="color:{"#dc2626" if drift and abs(drift)>1000 else "#374151"}">{drift:+d}мс</span>' if drift is not None else "—"
+        st    = a.get("status", "offline")
+        last  = f"{lag}с" if lag < 60 else (f"{lag//60}м" if lag < 3600 else f"{lag//3600}ч")
+        drift_s = (f'<span style="color:{"#dc2626" if abs(drift)>1000 else "#374151"}">{drift:+d}мс</span>'
+                   if drift is not None else "—")
         rows += f"""<tr>
           <td style="font-family:monospace;font-size:.78rem">{a.get('machine_id','')[:12]}…</td>
           <td><span class="badge {st}">{_ST_ICON.get(st,'❓')} {st}</span></td>
@@ -345,31 +414,77 @@ def cabinet(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=302)
 
-    agents = (_api("/api/v1/agents") or {}).get("agents", [])
-    online = sum(1 for a in agents if a.get("status") == "online")
-    bootstrap_data = _api("/api/v1/bootstrap/active")
-    bootstrap_url = (bootstrap_data or {}).get("bootstrap_url", "")
+    install_token = _get_install_token(user["id"])
+    user_server   = _get_user_server(user["id"])
 
-    agent_badge = f"&nbsp;<span style='background:#4f46e5;color:#fff;border-radius:20px;padding:1px 7px;font-size:.75rem'>{online}/{len(agents)}</span>" if agents else ""
+    # ── Server panel ──────────────────────────────────────────────────────────
+    if user_server:
+        health = _api(user_server["server_url"], user_server["api_key"], "/health")
+        if health and health.get("status") in ("ok", "degraded"):
+            status_badge = '<span class="badge online">🟢 Онлайн</span>'
+            extra = ""
+            if health.get("version"):
+                extra += f'<tr><td style="color:#6b7280">Версия</td><td>{health["version"]}</td></tr>'
+            if health.get("db"):
+                db_ok = health["db"] == "ok"
+                extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}</td></tr>'
+            if health.get("disk_free_gb") is not None:
+                extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
+        else:
+            status_badge = '<span class="badge offline">🔴 Недоступен</span>'
+            extra = ""
+
+        server_panel = f"""
+  <div class="card">
+    <div class="sec-title">{user_server['server_name']}</div>
+    <table>
+      <tr><td style="color:#6b7280;width:160px">Адрес</td><td><code>{user_server['server_url']}</code></td></tr>
+      <tr><td style="color:#6b7280">Статус</td><td>{status_badge}</td></tr>
+      {extra}
+    </table>
+  </div>"""
+        agents_data   = (_api(user_server["server_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
+        bootstrap_raw = _api(user_server["server_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
+        bootstrap_url = bootstrap_raw.get("bootstrap_url", "")
+    else:
+        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
+        server_panel = f"""
+  <div class="card">
+    <div class="sec-title">Установить сервер</div>
+    <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:</p>
+    <div class="copy-row">
+      <div class="code-box" id="srv-cmd">{install_cmd}</div>
+      <button class="btn btn-gray" id="srv-cmd-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('srv-cmd')">Скопировать</button>
+    </div>
+    <p class="hint">Команда установит Docker, сервер и все сервисы. После завершения сервер появится здесь автоматически.</p>
+  </div>"""
+        agents_data   = []
+        bootstrap_url = ""
+
+    # ── Agents panel ──────────────────────────────────────────────────────────
+    online = sum(1 for a in agents_data if a.get("status") == "online")
+    agent_badge = (f"&nbsp;<span style='background:#4f46e5;color:#fff;border-radius:20px;"
+                   f"padding:1px 7px;font-size:.75rem'>{online}/{len(agents_data)}</span>"
+                   if agents_data else "")
+
+    if bootstrap_url:
+        ps_cmd = f"powershell -Command \"iwr '{bootstrap_url}' -OutFile agent-setup.ps1; .\\agent-setup.ps1\""
+        agent_install_section = f"""
+    <div class="sec-title">Установить агент на Windows</div>
+    <p style="font-size:.85rem;color:#6b7280;margin-bottom:8px">Запустите на Windows-машине от имени администратора:</p>
+    <div class="copy-row">
+      <div class="code-box" id="burl">{ps_cmd}</div>
+      <button class="btn btn-gray" id="burl-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('burl')">Скопировать</button>
+    </div>
+    <p class="hint">Агент установится тихо, без перезагрузки.</p>"""
+    else:
+        agent_install_section = '<p style="color:#9ca3af;font-size:.88rem">Сначала установите и запустите сервер — команда установки агента появится здесь.</p>'
 
     nav = f"""
     <span>{user['email']}</span>
     <form method="post" action="/logout" style="display:inline">
       <button class="btn btn-gray" style="padding:5px 14px;font-size:.82rem">Выйти</button>
     </form>"""
-
-    server_status_badge = '<span class="badge online">🟢 Онлайн</span>' if (_api("/health") is not None) else '<span class="badge offline">🔴 Недоступен</span>'
-
-    bootstrap_section = f"""
-    <div class="sec-title">Bootstrap-ссылка для установки агента</div>
-    <p style="font-size:.85rem;color:#6b7280;margin-bottom:8px">Отправьте ссылку пользователям или запустите на Windows-машине:</p>
-    <div class="copy-row">
-      <div class="code-box" id="burl">{bootstrap_url}</div>
-      <button class="btn btn-gray" id="burl-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('burl')">Скопировать</button>
-    </div>
-    <p style="font-size:.78rem;color:#9ca3af;margin-top:6px">
-      PowerShell: <code>powershell -Command "iwr '{bootstrap_url}' -OutFile bootstrap.ps1; .\\bootstrap.ps1"</code>
-    </p>""" if bootstrap_url else '<p style="color:#9ca3af;font-size:.88rem">Bootstrap-профиль создаётся автоматически…</p>'
 
     body = f"""
 <div class="tabs">
@@ -378,27 +493,12 @@ def cabinet(request: Request):
 </div>
 
 <div id="panel-server" class="panel active">
-  <div class="card">
-    <div class="sec-title">Облачный сервер</div>
-    <table>
-      <tr><td style="color:#6b7280;width:130px">Адрес</td><td><code>api.seamlean.com</code></td></tr>
-      <tr><td style="color:#6b7280">Статус</td><td>{server_status_badge}</td></tr>
-      <tr><td style="color:#6b7280">Режим</td><td>Cloud</td></tr>
-    </table>
-  </div>
-  <div class="card">
-    <div class="sec-title">Установить сервер (on-premises)</div>
-    <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:</p>
-    <div class="copy-row">
-      <div class="code-box" id="srv-cmd">curl -fsSL https://seamlean.com/install.sh | sudo bash</div>
-      <button class="btn btn-gray" id="srv-cmd-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('srv-cmd')">Скопировать</button>
-    </div>
-  </div>
+  {server_panel}
 </div>
 
 <div id="panel-agents" class="panel">
   <div class="card">
-    {bootstrap_section}
+    {agent_install_section}
   </div>
   <div class="card">
     <div class="sec-title">Устройства</div>
@@ -406,7 +506,7 @@ def cabinet(request: Request):
       <thead><tr>
         <th>Machine ID</th><th>Статус</th><th>Last seen</th><th>Слои</th><th>Drift</th>
       </tr></thead>
-      <tbody>{_agent_rows(agents)}</tbody>
+      <tbody>{_agent_rows(agents_data)}</tbody>
     </table>
   </div>
 </div>"""
@@ -414,7 +514,130 @@ def cabinet(request: Request):
     return _page("Кабинет — Seamlean", nav, body, wide=True)
 
 
-# ── Robots ────────────────────────────────────────────────────────────────────
+# ── install.sh ────────────────────────────────────────────────────────────────
+
+_INSTALL_SH = r"""#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="https://github.com/sabaleuskivitali/claude_developer.git"
+INSTALL_DIR="/opt/seamlean"
+INSTALL_TOKEN=""
+SERVER_NAME="seamlean"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --token|-t) INSTALL_TOKEN="$2"; shift 2;;
+    --name|-n)  SERVER_NAME="$2";   shift 2;;
+    *) shift;;
+  esac
+done
+
+echo "=== Seamlean Server Installer ==="
+
+[ "$EUID" -ne 0 ] && { echo "Run as root: sudo bash"; exit 1; }
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+apt-get update -q
+apt-get install -y -q curl git openssl avahi-daemon
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+  echo "Installing Docker..."
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+
+if ! docker compose version &>/dev/null 2>&1; then
+  apt-get install -y -q docker-compose-plugin
+fi
+
+# ── Clone / update ────────────────────────────────────────────────────────────
+if [ -d "$INSTALL_DIR/.git" ]; then
+  echo "Updating existing installation..."
+  git -C "$INSTALL_DIR" pull --ff-only
+else
+  echo "Cloning repository..."
+  git clone --depth=1 "$REPO" "$INSTALL_DIR"
+fi
+
+cd "$INSTALL_DIR/server"
+
+# ── Generate .env ─────────────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  PG_PASS=$(openssl rand -hex 16)
+  MINIO_KEY=$(openssl rand -hex 12)
+  MINIO_SECRET=$(openssl rand -hex 20)
+  API_KEY=$(openssl rand -hex 32)
+  cat > .env << EOF
+SERVER_NAME=${SERVER_NAME}
+POSTGRES_DB=diag
+POSTGRES_USER=diag
+POSTGRES_PASSWORD=${PG_PASS}
+API_KEY=${API_KEY}
+MINIO_ACCESS_KEY=${MINIO_KEY}
+MINIO_SECRET_KEY=${MINIO_SECRET}
+PORT_RANGE_START=49200
+PORT_RANGE_END=49300
+UPDATE_PACKAGES_DIR=/opt/seamlean/updates
+SMB_MOUNT_PATH=/mnt/diag
+SMB_SHARE_PATH=/mnt/diag
+ETL_INTERVAL_MINUTES=60
+EOF
+  echo "Generated secrets in .env"
+fi
+
+# Avahi services directory (mDNS for local discovery)
+mkdir -p /etc/avahi/services
+mkdir -p /opt/seamlean/updates /mnt/diag
+
+# ── Start ─────────────────────────────────────────────────────────────────────
+echo "Starting services..."
+docker compose pull -q 2>/dev/null || true
+docker compose up -d --build
+
+# ── Wait for API ──────────────────────────────────────────────────────────────
+echo -n "Waiting for API"
+for i in $(seq 1 30); do
+  if curl -sk https://127.0.0.1:49200/health | grep -q '"status"'; then
+    echo " ready"
+    break
+  fi
+  echo -n "."
+  sleep 2
+done
+
+# ── Register with cloud ───────────────────────────────────────────────────────
+if [ -n "$INSTALL_TOKEN" ]; then
+  LOCAL_IP=$(hostname -I | awk '{print $1}')
+  SERVER_URL="https://${LOCAL_IP}:49200"
+  API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
+
+  echo "Registering server with Seamlean cloud..."
+  RESP=$(curl -sf -X POST "https://seamlean.com/api/register-server" \
+    -H "Content-Type: application/json" \
+    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_url\":\"${SERVER_URL}\",\"api_key\":\"${API_KEY_VAL}\",\"server_name\":\"${SERVER_NAME}\"}" \
+    2>/dev/null || echo '{"ok":false}')
+
+  if echo "$RESP" | grep -q '"ok":true'; then
+    echo "✅ Server registered! Open https://seamlean.com/cabinet to see status."
+  else
+    echo "⚠️  Registration failed — open cabinet manually and add server URL: $SERVER_URL"
+  fi
+fi
+
+echo ""
+echo "=== ✅ Seamlean server installed ==="
+echo "API: https://$(hostname -I | awk '{print $1}'):49200"
+echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
+"""
+
+
+@app.get("/install.sh", response_class=PlainTextResponse)
+def install_sh():
+    return PlainTextResponse(_INSTALL_SH, media_type="text/x-sh")
+
+
+# ── Robots / Health ───────────────────────────────────────────────────────────
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots():
