@@ -37,7 +37,23 @@ public sealed class WindowWatcher : BackgroundService
         _logger   = logger;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override Task ExecuteAsync(CancellationToken ct)
+    {
+        // WinEventHook is thread-affine: the hook and its message pump must run on the same thread.
+        // Task.Delay with ConfigureAwait(false) would switch threads after each await, causing
+        // the message pump to run on a different thread — so WinEvent messages would never be delivered.
+        // Fix: run a dedicated STA message-pump thread for the lifetime of the service.
+        var thread = new Thread(() => RunMessageLoop(ct))
+        {
+            IsBackground = true,
+            Name         = "WindowWatcher.MsgPump",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return Task.CompletedTask;
+    }
+
+    private void RunMessageLoop(CancellationToken ct)
     {
         try
         {
@@ -60,18 +76,18 @@ public sealed class WindowWatcher : BackgroundService
                 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
-            // Pump messages — required for WinEvent callbacks to fire
+            // Block with a 16ms timeout to stay responsive to cancellation
+            // while keeping the pump on this thread at all times.
             while (!ct.IsCancellationRequested)
             {
+                MsgWaitForMultipleObjectsEx(0, nint.Zero, 16, QS_ALLEVENTS, MWMO_INPUTAVAILABLE);
                 while (PeekMessage(out var msg, nint.Zero, 0, 0, PM_REMOVE))
                 {
                     TranslateMessage(ref msg);
                     DispatchMessage(ref msg);
                 }
-                await Task.Delay(16, ct).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             WriteLayerError(ex);
@@ -218,7 +234,9 @@ public sealed class WindowWatcher : BackgroundService
     private const uint EVENT_SYSTEM_DIALOGSTART = 0x0010;
     private const uint WINEVENT_OUTOFCONTEXT   = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
-    private const uint PM_REMOVE = 0x0001;
+    private const uint PM_REMOVE        = 0x0001;
+    private const uint QS_ALLEVENTS     = 0x04BF;
+    private const uint MWMO_INPUTAVAILABLE = 0x0004;
 
     private delegate void WinEventDelegate(
         nint hWinEventHook, uint eventType, nint hwnd,
@@ -252,4 +270,8 @@ public sealed class WindowWatcher : BackgroundService
 
     [DllImport("user32.dll")]
     private static extern nint DispatchMessage(ref MSG lpmsg);
+
+    [DllImport("user32.dll")]
+    private static extern uint MsgWaitForMultipleObjectsEx(
+        uint nCount, nint pHandles, uint dwMilliseconds, uint dwWakeMask, uint dwFlags);
 }

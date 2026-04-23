@@ -32,13 +32,16 @@ public sealed class EventLogWatcherService : IDisposable
 
     public void Start()
     {
-        var cutoff = DateTime.UtcNow.AddHours(-24);
+        var cutoff    = DateTime.UtcNow.AddHours(-24);
+        var startTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.000Z");
 
         foreach (var logName in DiscoverActiveChannels(cutoff))
         {
             try
             {
-                var query   = new EventLogQuery(logName, PathType.LogName, "*");
+                // Only deliver events written after the service starts — prevents backfilling history.
+                var xpathFilter = $"*[System[TimeCreated[@SystemTime >= '{startTime}']]]";
+                var query   = new EventLogQuery(logName, PathType.LogName, xpathFilter);
                 var watcher = new EventLogWatcher(query);
                 watcher.EventRecordWritten += (_, e) => HandleRecord(e.EventRecord, logName);
                 watcher.Enabled = true;
