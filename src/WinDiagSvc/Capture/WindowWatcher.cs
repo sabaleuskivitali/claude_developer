@@ -20,6 +20,7 @@ public sealed class WindowWatcher : BackgroundService
 
     private string _lastProcessName = "";
     private nint   _hookHandle;
+    private nint   _dialogHookHandle;
 
     // Callback must be kept alive for the duration of the hook
     private WinEventDelegate? _hookProc;
@@ -53,6 +54,12 @@ public sealed class WindowWatcher : BackgroundService
                 return;
             }
 
+            _dialogHookHandle = SetWinEventHook(
+                EVENT_SYSTEM_DIALOGSTART, EVENT_SYSTEM_DIALOGSTART,
+                nint.Zero, _hookProc,
+                0, 0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
             // Pump messages — required for WinEvent callbacks to fire
             while (!ct.IsCancellationRequested)
             {
@@ -73,6 +80,8 @@ public sealed class WindowWatcher : BackgroundService
         {
             if (_hookHandle != nint.Zero)
                 UnhookWinEvent(_hookHandle);
+            if (_dialogHookHandle != nint.Zero)
+                UnhookWinEvent(_dialogHookHandle);
         }
     }
 
@@ -83,6 +92,12 @@ public sealed class WindowWatcher : BackgroundService
         try
         {
             if (hwnd == nint.Zero) return;
+
+            if (eventType == EVENT_SYSTEM_DIALOGSTART)
+            {
+                HandleDialogStart(hwnd);
+                return;
+            }
 
             var title   = GetTitle(hwnd);
             var cls     = GetClass(hwnd);
@@ -95,29 +110,55 @@ public sealed class WindowWatcher : BackgroundService
             var raw = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var ev = new ActivityEvent
             {
-                SessionId    = _store.SessionId,
-                MachineId    = _settings.MachineId,
-                UserId       = _settings.UserId,
-                TimestampUtc = raw,
-                SyncedTs     = _ntp.SyncedTs(raw),
-                DriftMs      = _ntp.CurrentDriftMs,
-                DriftRatePpm = _ntp.DriftRatePpm,
-                Layer        = "window",
-                EventType    = isSwitch ? nameof(EventType.AppSwitch) : nameof(EventType.WindowActivated),
-                ProcessName  = name,
-                AppVersion   = version,
-                WindowTitle  = title,
-                WindowClass  = cls,
+                SessionId     = _store.SessionId,
+                MachineId     = _settings.MachineId,
+                UserId        = _settings.UserId,
+                TimestampUtc  = raw,
+                SyncedTs      = _ntp.SyncedTs(raw),
+                DriftMs       = _ntp.CurrentDriftMs,
+                DriftRatePpm  = _ntp.DriftRatePpm,
+                Layer         = "window",
+                EventType     = isSwitch ? nameof(EventType.AppSwitch) : nameof(EventType.WindowActivated),
+                ProcessName   = name,
+                AppVersion    = version,
+                WindowTitle   = title,
+                WindowClass   = cls,
                 CaptureReason = "window_activated",
             };
 
             _store.Insert(ev);
-            OnWindowChanged?.Invoke(ev.EventId.ToString());
+            OnWindowChanged?.Invoke("window_activated");
         }
         catch (Exception ex)
         {
             WriteLayerError(ex);
         }
+    }
+
+    private void HandleDialogStart(nint hwnd)
+    {
+        var title = GetTitle(hwnd);
+        var (name, version) = GetProcess(hwnd);
+
+        var raw = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _store.Insert(new ActivityEvent
+        {
+            SessionId     = _store.SessionId,
+            MachineId     = _settings.MachineId,
+            UserId        = _settings.UserId,
+            TimestampUtc  = raw,
+            SyncedTs      = _ntp.SyncedTs(raw),
+            DriftMs       = _ntp.CurrentDriftMs,
+            DriftRatePpm  = _ntp.DriftRatePpm,
+            Layer         = "window",
+            EventType     = nameof(EventType.WindowActivated),
+            ProcessName   = name,
+            AppVersion    = version,
+            WindowTitle   = title,
+            WindowClass   = "#32770",   // standard dialog class
+            CaptureReason = "dialog_appeared",
+        });
+        OnWindowChanged?.Invoke("dialog_appeared");
     }
 
     private static string GetTitle(nint hwnd)
@@ -173,7 +214,8 @@ public sealed class WindowWatcher : BackgroundService
     // P/Invoke
     // -----------------------------------------------------------------------
 
-    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint EVENT_SYSTEM_FOREGROUND  = 0x0003;
+    private const uint EVENT_SYSTEM_DIALOGSTART = 0x0010;
     private const uint WINEVENT_OUTOFCONTEXT   = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
     private const uint PM_REMOVE = 0x0001;

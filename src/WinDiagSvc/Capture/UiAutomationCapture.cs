@@ -26,6 +26,13 @@ public sealed class UiAutomationCapture : BackgroundService
     private AutomationPropertyChangedEventHandler? _selectionHandler;
     private AutomationEventHandler? _focusHandler;
 
+    // ValueChanged debounce: screenshot fires N ms after the last keystroke
+    private Timer? _valueDebounceTimer;
+    private readonly object _valueLock = new();
+
+    // SelectionChanged throttle: screenshot no more than once per N ms
+    private DateTime _lastSelectionCapture = DateTime.MinValue;
+
     public UiAutomationCapture(
         EventStore store,
         NtpSynchronizer ntp,
@@ -49,14 +56,14 @@ public sealed class UiAutomationCapture : BackgroundService
                 TreeScope.Descendants,
                 _invokeHandler);
 
-            _valueHandler = (src, args) => HandlePropertyChange(src, args, nameof(EventType.ValueChanged));
+            _valueHandler = (src, args) => HandleValueChanged(src, args);
             Automation.AddAutomationPropertyChangedEventHandler(
                 AutomationElement.RootElement,
                 TreeScope.Descendants,
                 _valueHandler,
                 ValuePattern.ValueProperty);
 
-            _selectionHandler = (src, args) => HandlePropertyChange(src, args, nameof(EventType.SelectionChanged));
+            _selectionHandler = (src, args) => HandleSelectionChanged(src, args);
             Automation.AddAutomationPropertyChangedEventHandler(
                 AutomationElement.RootElement,
                 TreeScope.Descendants,
@@ -81,6 +88,7 @@ public sealed class UiAutomationCapture : BackgroundService
     public override Task StopAsync(CancellationToken ct)
     {
         try { Automation.RemoveAllEventHandlers(); } catch { }
+        lock (_valueLock) { _valueDebounceTimer?.Dispose(); }
         return base.StopAsync(ct);
     }
 
@@ -98,17 +106,53 @@ public sealed class UiAutomationCapture : BackgroundService
         catch (Exception ex) { WriteLayerError(ex); }
     }
 
-    private void HandlePropertyChange(object src, AutomationPropertyChangedEventArgs args, string eventType)
+    private void HandleValueChanged(object src, AutomationPropertyChangedEventArgs args)
     {
         try
         {
             var el  = (AutomationElement)src;
             var val = args.NewValue?.ToString();
-            var ev  = BuildEvent(el, eventType, val, null);
+            var ev  = BuildEvent(el, nameof(EventType.ValueChanged), val, null);
             if (ev is null) return;
             _store.Insert(ev);
+
             if (!ev.IsPasswordField)
-                OnUiEvent?.Invoke("ui_event");
+            {
+                // Debounce: reset timer on every keystroke, screenshot fires after silence
+                var debounceMs = _settings.CaptureProfile.ValueChangedDebounceMs;
+                lock (_valueLock)
+                {
+                    _valueDebounceTimer?.Dispose();
+                    _valueDebounceTimer = new Timer(
+                        _ => OnUiEvent?.Invoke("field_value_settled"),
+                        null, debounceMs, Timeout.Infinite);
+                }
+            }
+        }
+        catch (Exception ex) { WriteLayerError(ex); }
+    }
+
+    private void HandleSelectionChanged(object src, AutomationPropertyChangedEventArgs args)
+    {
+        try
+        {
+            var el  = (AutomationElement)src;
+            var val = args.NewValue?.ToString();
+            var ev  = BuildEvent(el, nameof(EventType.SelectionChanged), val, null);
+            if (ev is null) return;
+            _store.Insert(ev);
+
+            if (!ev.IsPasswordField)
+            {
+                // Throttle: screenshot no more than once per SelectionChangedDebounceMs
+                var now = DateTime.UtcNow;
+                if ((now - _lastSelectionCapture).TotalMilliseconds >=
+                    _settings.CaptureProfile.SelectionChangedDebounceMs)
+                {
+                    OnUiEvent?.Invoke("ui_event");
+                    _lastSelectionCapture = now;
+                }
+            }
         }
         catch (Exception ex) { WriteLayerError(ex); }
     }
@@ -117,11 +161,12 @@ public sealed class UiAutomationCapture : BackgroundService
     {
         try
         {
-            // Focus events are high-frequency — only log, no screenshot trigger
             var el = (AutomationElement)src;
             var ev = BuildEvent(el, nameof(EventType.TextCommitted), null, null);
             if (ev is null) return;
             _store.Insert(ev);
+            if (!ev.IsPasswordField)
+                OnUiEvent?.Invoke("text_committed");
         }
         catch (Exception ex) { WriteLayerError(ex); }
     }
@@ -132,7 +177,7 @@ public sealed class UiAutomationCapture : BackgroundService
         try { info = el.Current; }
         catch { return null; }
 
-        var isPassword = info.IsPassword;
+        var isPassword  = info.IsPassword;
         var controlType = info.ControlType?.LocalizedControlType;
 
         string? valueHash = null;

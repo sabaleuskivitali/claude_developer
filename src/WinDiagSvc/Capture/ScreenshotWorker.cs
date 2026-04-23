@@ -31,22 +31,39 @@ public sealed class ScreenshotWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var dir = _settings.ExpandedScreenshotDir;
-        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(_settings.ExpandedScreenshotDir);
 
-        var interval = TimeSpan.FromSeconds(_settings.ScreenshotIntervalSeconds);
-        using var timer = new PeriodicTimer(interval);
+        var profile = _settings.CaptureProfile;
 
+        // Baseline: unconditional screenshot every BaselineIntervalSec, bypasses dHash
+        _ = RunBaselineAsync(profile.BaselineIntervalSec, ct);
+
+        // Periodic: adaptive interval per active process, dHash filtered
+        var lastCapture = DateTime.UtcNow;
+        using var tick = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        while (await tick.WaitForNextTickAsync(ct))
+        {
+            var intervalSec = GetCurrentProcessInterval(profile);
+            if ((DateTime.UtcNow - lastCapture).TotalSeconds >= intervalSec)
+            {
+                try { CaptureAndStore("periodic"); }
+                catch (Exception ex) { WriteLayerError(ex); }
+                lastCapture = DateTime.UtcNow;
+            }
+        }
+    }
+
+    private async Task RunBaselineAsync(int intervalSec, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSec));
         while (await timer.WaitForNextTickAsync(ct))
         {
-            try { CaptureAndStore("periodic_10s"); }
+            try { CaptureAndStore("baseline_60s"); }
             catch (Exception ex) { WriteLayerError(ex); }
         }
     }
 
-    /// <summary>
-    /// Called by WindowWatcher / UiAutomationCapture when a significant event occurs.
-    /// </summary>
+    /// <summary>Called by WindowWatcher / UiAutomationCapture on significant events.</summary>
     public void TriggerCapture(string reason)
     {
         try { CaptureAndStore(reason); }
@@ -60,15 +77,15 @@ public sealed class ScreenshotWorker : BackgroundService
 
         var hash = ComputeDHash(bitmap);
 
-        // Skip duplicate periodic screenshots — always save on triggered events
-        if (reason == "periodic_10s" &&
+        // dHash filter only for periodic — baseline and event-triggered always save
+        if (reason == "periodic" &&
             HammingDistance(_lastDHash, hash) < _settings.DHashDistanceThreshold)
             return;
 
         _lastDHash = hash;
 
-        var date    = DateTime.UtcNow.ToString("yyyyMMdd");
-        var dir     = Path.Combine(_settings.ExpandedScreenshotDir, date);
+        var date = DateTime.UtcNow.ToString("yyyyMMdd");
+        var dir  = Path.Combine(_settings.ExpandedScreenshotDir, date);
         Directory.CreateDirectory(dir);
 
         var eventId = Guid.NewGuid();
@@ -79,26 +96,45 @@ public sealed class ScreenshotWorker : BackgroundService
         using var fs    = File.OpenWrite(path);
         data.SaveTo(fs);
 
-        // Store relative path for portability
         var relativePath = Path.Combine(date, $"{eventId}.webp");
 
         var raw = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _store.Insert(new ActivityEvent
         {
-            EventId       = eventId,
-            SessionId     = _store.SessionId,
-            MachineId     = _settings.MachineId,
-            UserId        = _settings.UserId,
-            TimestampUtc  = raw,
-            SyncedTs      = _ntp.SyncedTs(raw),
-            DriftMs       = _ntp.CurrentDriftMs,
-            DriftRatePpm  = _ntp.DriftRatePpm,
-            Layer         = "visual",
-            EventType     = nameof(EventType.Screenshot),
+            EventId         = eventId,
+            SessionId       = _store.SessionId,
+            MachineId       = _settings.MachineId,
+            UserId          = _settings.UserId,
+            TimestampUtc    = raw,
+            SyncedTs        = _ntp.SyncedTs(raw),
+            DriftMs         = _ntp.CurrentDriftMs,
+            DriftRatePpm    = _ntp.DriftRatePpm,
+            Layer           = "visual",
+            EventType       = nameof(EventType.Screenshot),
             ScreenshotPath  = relativePath,
             ScreenshotDHash = hash,
             CaptureReason   = reason,
         });
+    }
+
+    private int GetCurrentProcessInterval(CaptureProfile profile)
+    {
+        try
+        {
+            var hwnd = GetForegroundWindow();
+            if (hwnd == nint.Zero) return profile.IdleIntervalSec;
+
+            GetWindowThreadProcessId(hwnd, out var pid);
+            var name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName;
+
+            var match = profile.ProcessOverrides
+                .FirstOrDefault(p => p.Process.Equals(name, StringComparison.OrdinalIgnoreCase));
+            return match?.IntervalSec ?? profile.DefaultIntervalSec;
+        }
+        catch
+        {
+            return profile.DefaultIntervalSec;
+        }
     }
 
     private static SKBitmap? CaptureActiveWindow()
@@ -112,9 +148,8 @@ public sealed class ScreenshotWorker : BackgroundService
         var h = rect.Bottom - rect.Top;
         if (w <= 0 || h <= 0) return null;
 
-        // Use desktop DC (GetDC(0)) so GPU-composited windows (Chrome, Edge, etc.)
-        // are captured from the screen surface rather than the window's own DC
-        // which may be blank for hardware-accelerated renderers.
+        // Use desktop DC so GPU-composited windows (Chrome, Edge) are captured
+        // from the screen surface rather than the window's own DC (may be blank).
         var desktopDc = GetDC(nint.Zero);
         var memDc     = CreateCompatibleDC(desktopDc);
         var hBmp      = CreateCompatibleBitmap(desktopDc, w, h);
@@ -122,14 +157,13 @@ public sealed class ScreenshotWorker : BackgroundService
 
         try
         {
-            // BitBlt from desktop at window's screen coordinates
             BitBlt(memDc, 0, 0, w, h, desktopDc, rect.Left, rect.Top, SRCCOPY);
 
             var bmpInfo = new BITMAPINFOHEADER
             {
                 biSize        = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
                 biWidth       = (uint)w,
-                biHeight      = -h,       // top-down DIB
+                biHeight      = -h,
                 biPlanes      = 1,
                 biBitCount    = 32,
                 biCompression = BI_RGB,
@@ -188,14 +222,15 @@ public sealed class ScreenshotWorker : BackgroundService
     // P/Invoke
     // -----------------------------------------------------------------------
 
-    private const uint SRCCOPY      = 0x00CC0020;
-    private const uint BI_RGB       = 0;
+    private const uint SRCCOPY        = 0x00CC0020;
+    private const uint BI_RGB         = 0;
     private const uint DIB_RGB_COLORS = 0;
 
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
     [DllImport("user32.dll")] private static extern nint GetDC(nint hWnd);
     [DllImport("user32.dll")] private static extern int ReleaseDC(nint hWnd, nint hDC);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
     [DllImport("gdi32.dll")]  private static extern nint CreateCompatibleDC(nint hDC);
     [DllImport("gdi32.dll")]  private static extern nint CreateCompatibleBitmap(nint hDC, int nWidth, int nHeight);
     [DllImport("gdi32.dll")]  private static extern nint SelectObject(nint hDC, nint hObject);

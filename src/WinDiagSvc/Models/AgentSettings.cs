@@ -19,9 +19,10 @@ public sealed class AgentSettings
     public string ShareUser { get; set; } = "";
     public string SharePass { get; set; } = "";
 
-    public int SyncIntervalSeconds       { get; set; } = 30;
-    public int ScreenshotIntervalSeconds { get; set; } = 10;
-    public int DHashDistanceThreshold    { get; set; } = 10;
+    public int SyncIntervalSeconds    { get; set; } = 30;
+    public int DHashDistanceThreshold { get; set; } = 10;
+
+    public CaptureProfile CaptureProfile { get; set; } = new();
     public int IdleLightThresholdMs      { get; set; } = 30_000;
     public int IdleDeepThresholdMs       { get; set; } = 120_000;
 
@@ -54,4 +55,20 @@ public sealed class CaseIdPattern
 {
     public string ProcessName { get; set; } = "";
     public string Pattern     { get; set; } = "";
+}
+
+public sealed class CaptureProfile
+{
+    public int DefaultIntervalSec         { get; set; } = 10;
+    public int IdleIntervalSec            { get; set; } = 30;
+    public int BaselineIntervalSec        { get; set; } = 60;
+    public int ValueChangedDebounceMs     { get; set; } = 500;
+    public int SelectionChangedDebounceMs { get; set; } = 300;
+    public CaptureProcessOverride[] ProcessOverrides { get; set; } = [];
+}
+
+public sealed class CaptureProcessOverride
+{
+    public string Process     { get; set; } = "";
+    public int    IntervalSec { get; set; } = 10;
 }
