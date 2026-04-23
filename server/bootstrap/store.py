@@ -5,6 +5,7 @@ States: pending → approved → published → active → expired | revoked
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import asyncpg
 
 from bootstrap.schema import SignedBootstrapProfile, DeploymentContext
@@ -26,16 +27,17 @@ async def create(
 ) -> str:
     """Persist a new profile with status=pending. Returns profile_id (UUID str)."""
     profile = signed.get_profile()
+    expires_at = datetime.fromisoformat(profile.expires_at).astimezone(timezone.utc)
     row = await pool.fetchrow(
         """
         INSERT INTO bootstrap_profiles
             (tenant_id, site_id, expires_at, status, signed_data, signature, deployment_context)
-        VALUES ($1, $2, $3::TIMESTAMPTZ, 'pending', $4, $5, $6::JSONB)
+        VALUES ($1, $2, $3, 'pending', $4, $5, $6::JSONB)
         RETURNING profile_id::TEXT
         """,
         profile.tenant_id,
         profile.site_id,
-        profile.expires_at,
+        expires_at,
         signed.signed_data,
         signed.signature,
         ctx.model_dump_json(),

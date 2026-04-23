@@ -8,6 +8,8 @@ import os
 import secrets
 from datetime import datetime, timezone, timedelta
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -119,9 +121,9 @@ async def generate(request: Request, body: dict):
     # Create enrollment token in DB
     profile    = signed.get_profile()
     token      = profile.enrollment.token
-    expires_at = profile.enrollment.expires_at
+    expires_at = datetime.fromisoformat(profile.enrollment.expires_at).astimezone(timezone.utc)
     await request.app.state.db.execute(
-        "INSERT INTO enrollment_tokens (token, profile_id, expires_at) VALUES ($1, $2::UUID, $3::TIMESTAMPTZ)",
+        "INSERT INTO enrollment_tokens (token, profile_id, expires_at) VALUES ($1, $2::UUID, $3)",
         token, profile_id, expires_at,
     )
 
