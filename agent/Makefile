@@ -10,7 +10,8 @@ VERSION    := $(shell cat VERSION)
 OUT_DIR    := /tmp/agent-publish
 ZIP_PATH   := /tmp/WinDiagSvc.zip
 CLOUD_HOST := agent@178.104.1.6
-CLOUD_PATH := ~/cloud/app/agent/WinDiagSvc.zip
+CLOUD_DB   := /home/agent/cloud/app/data/users.db
+GH_REPO    := sabaleuskivitali/claude_developer
 
 # ── Targets ─────────────────────────────────────────────────────────────────
 
@@ -68,14 +69,19 @@ pack: validate
 		&& zip -qr $(ZIP_PATH) extension/
 	@echo "    OK: $(ZIP_PATH) ($$(du -sh $(ZIP_PATH) | cut -f1))"
 
-## 3. Deploy — upload zip to cloud server
+## 4. Deploy — publish to GitHub Releases + update redirect URL on cloud
 deploy: all
-	@echo "==> Deploying to $(CLOUD_HOST):$(CLOUD_PATH)..."
-	@ssh $(CLOUD_HOST) 'mkdir -p ~/cloud/app/agent'
-	@scp $(ZIP_PATH) $(CLOUD_HOST):$(CLOUD_PATH)
-	@echo "    OK: deployed agent v$(VERSION)"
+	@echo "==> Publishing agent v$(VERSION) to GitHub Releases..."
+	@gh release create "agent/v$(VERSION)" $(ZIP_PATH) \
+		--repo $(GH_REPO) \
+		--title "Agent v$(VERSION)" \
+		--notes "Agent v$(VERSION)" 2>&1 | tail -1
+	@DOWNLOAD_URL="https://github.com/$(GH_REPO)/releases/download/agent%2Fv$(VERSION)/WinDiagSvc.zip"; \
+	echo "==> Updating redirect URL on cloud..."; \
+	ssh $(CLOUD_HOST) "sqlite3 $(CLOUD_DB) \"INSERT OR REPLACE INTO config(key,value) VALUES('agent_download_url','$$DOWNLOAD_URL')\""; \
+	echo "    OK: seamlean.com/agent -> $$DOWNLOAD_URL"
 
-## Tag release in git (call after commit)
+## 5. Tag release in git (call before deploy)
 tag:
 	@echo "==> Tagging agent/v$(VERSION)..."
 	@git tag -a "agent/v$(VERSION)" -m "agent v$(VERSION)"
