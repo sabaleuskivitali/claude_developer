@@ -51,7 +51,22 @@ public sealed class LayerHealthTracker
             ["agent"]   = 3,
         };
 
-    private readonly ConcurrentDictionary<string, LayerState> _states = new();
+    private readonly ConcurrentDictionary<string, LayerState> _states;
+
+    public LayerHealthTracker()
+    {
+        // Pre-seed all known layers with current time so the watchdog doesn't
+        // trigger immediately on startup if a layer hasn't fired its first event yet.
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _states = new ConcurrentDictionary<string, LayerState>(
+            KnownLayers.Select(l =>
+            {
+                var s = new LayerState();
+                Interlocked.Exchange(ref s._lastEventMs, nowMs);
+                return KeyValuePair.Create(l, s);
+            })
+        );
+    }
 
     public void RecordEvent(string layer)
     {
