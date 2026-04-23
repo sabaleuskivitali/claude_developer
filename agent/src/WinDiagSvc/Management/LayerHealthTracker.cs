@@ -129,7 +129,7 @@ public sealed class LayerHealthTracker
         foreach (var layer in KnownLayers)
             result[layer] = _states.TryGetValue(layer, out var s)
                 ? s.Snapshot()
-                : new LayerSnapshot(0, 0, 0, "inactive");
+                : new LayerSnapshot(0, 0, 0, "inactive", false);
         return result;
     }
 
