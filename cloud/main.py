@@ -427,7 +427,8 @@ def cabinet(request: Request):
                 extra += f'<tr><td style="color:#6b7280">Версия</td><td>{health["version"]}</td></tr>'
             if health.get("db"):
                 db_ok = health["db"] == "ok"
-                extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}</td></tr>'
+                db_size = f' — {health["db_size_mb"]} MB' if health.get("db_size_mb") is not None else ""
+                extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}{db_size}</td></tr>'
             if health.get("disk_free_gb") is not None:
                 extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
         else:
@@ -445,7 +446,9 @@ def cabinet(request: Request):
   </div>"""
         agents_data   = (_api(user_server["server_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
         bootstrap_raw = _api(user_server["server_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
-        bootstrap_url = bootstrap_raw.get("bootstrap_url", "")
+        # If the server has an active profile, the bootstrap URL is just the public endpoint
+        bootstrap_url = (user_server["server_url"].rstrip("/") + "/api/v1/bootstrap/active"
+                         if bootstrap_raw.get("signed_data") else "")
     else:
         install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
         server_panel = f"""
@@ -582,6 +585,7 @@ UPDATE_PACKAGES_DIR=/opt/seamlean/updates
 SMB_MOUNT_PATH=/mnt/diag
 SMB_SHARE_PATH=/mnt/diag
 ETL_INTERVAL_MINUTES=60
+SERVER_URL=
 EOF
   echo "Generated secrets in .env"
 fi
@@ -608,8 +612,16 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  LOCAL_IP=$(hostname -I | awk '{print $1}')
-  SERVER_URL="https://${LOCAL_IP}:49200"
+  # Try public IP first, fall back to local IP
+  PUBLIC_IP=$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP=$(hostname -I | awk '{print $1}')
+  fi
+  SERVER_URL="https://${PUBLIC_IP}:49200"
+  # Write SERVER_URL to .env so the bootstrap generator can use it
+  if ! grep -q '^SERVER_URL=' .env; then
+    echo "SERVER_URL=${SERVER_URL}" >> .env
+  fi
   API_KEY_VAL=$(grep '^API_KEY=' .env | cut -d= -f2)
 
   echo "Registering server with Seamlean cloud..."
@@ -627,7 +639,7 @@ fi
 
 echo ""
 echo "=== ✅ Seamlean server installed ==="
-echo "API: https://$(hostname -I | awk '{print $1}'):49200"
+echo "API: https://$(curl -4 -sf --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || hostname -I | awk '{print $1}'):49200"
 echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
 """
 

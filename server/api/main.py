@@ -26,12 +26,31 @@ limiter = Limiter(
 )
 
 
+async def _ensure_bootstrap(pool):
+    """Auto-create and publish a default bootstrap profile if none exists."""
+    from bootstrap import store as bs_store
+    from bootstrap.generator import generate_profile, DeploymentContext
+    profiles = await bs_store.list_profiles(pool)
+    if profiles:
+        return
+    server_url = os.environ.get("SERVER_URL", "")
+    ctx = DeploymentContext(server_url=server_url, tenant_id="default", site_id="default")
+    try:
+        signed = generate_profile(ctx)
+    except Exception:
+        return
+    profile_id = await bs_store.create(pool, signed)
+    await bs_store.approve(pool, profile_id)
+    await bs_store.publish(pool, profile_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = await db.create_pool()
     app.state.event_queue = db.EventQueue(app.state.db)
     app.state.event_queue.start()
     await storage.ensure_bucket()
+    await _ensure_bootstrap(app.state.db)
     yield
     await app.state.event_queue.stop()
     await app.state.db.close()
@@ -99,7 +118,9 @@ async def health(request: Request):
     try:
         async with request.app.state.db.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        checks["db"] = "ok"
+            row = await conn.fetchrow("SELECT pg_database_size(current_database()) AS sz")
+            checks["db"] = "ok"
+            checks["db_size_mb"] = round(row["sz"] / 1024 / 1024, 1)
     except Exception as e:
         checks["db"] = f"error: {e}"
         status = "degraded"
