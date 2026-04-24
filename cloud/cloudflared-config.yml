@@ -1,0 +1,9 @@
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/creds.json
+
+ingress:
+  - hostname: seamlean.com
+    service: https://nginx:443
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404

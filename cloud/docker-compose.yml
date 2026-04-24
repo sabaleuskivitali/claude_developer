@@ -17,3 +17,13 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared-creds.json:/etc/cloudflared/creds.json:ro
+    depends_on:
+      - nginx
+    restart: unless-stopped
