@@ -765,7 +765,7 @@ if [ -n "$INSTALL_TOKEN" ]; then
 
   if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
     API_KEY=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['api_key'])")
-    TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tunnel_token',''))")
+    TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_token'); print(v if v else '')")
     sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
     echo "✅ Server registered! API key configured."
 
