@@ -128,6 +128,7 @@ ww.OnWindowChanged = _ => sw.TriggerCapture("window_activated");
 uia.OnUiEvent      = _ => sw.TriggerCapture("ui_event");
 
 await host.RunAsync();
+return 0;
 
 // ---------------------------------------------------------------------------
 
