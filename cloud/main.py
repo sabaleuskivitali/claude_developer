@@ -504,6 +504,7 @@ def logout(request: Request):
 # ── Server registration (called by install.sh) ────────────────────────────────
 
 @app.post("/api/register-server")
+@app.post("/v1/register-server")
 async def register_server(request: Request):
     try:
         data          = await request.json()
@@ -579,6 +580,7 @@ async def register_server(request: Request):
 # ── Server heartbeat (called by server every 5 min) ──────────────────────────
 
 @app.post("/api/server-heartbeat")
+@app.post("/v1/server-heartbeat")
 async def server_heartbeat(request: Request):
     api_key = request.headers.get("X-Api-Key", "")
     if not api_key:
@@ -665,9 +667,8 @@ def _agent_rows(agents) -> str:
                    if drift is not None else "—")
         stats = _parse_layer_stats(a.get("layer_stats"))
         rid   = f"a{i}"
-        display_name = a.get('hostname') or f"{a.get('machine_id','')[:12]}…"
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
-          <td style="font-family:monospace;font-size:.78rem">{display_name}</td>
+          <td style="font-family:monospace;font-size:.78rem">{a.get('machine_id','')[:12]}…</td>
           <td><span class="badge {st}">{_ST_ICON.get(st,'❓')} {st}</span></td>
           <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
           <td style="color:#6b7280;font-size:.82rem">{ver}</td>
@@ -868,16 +869,8 @@ if ! docker compose version &>/dev/null 2>&1; then
 fi
 
 # ── Clone / update ────────────────────────────────────────────────────────────
-TOKEN_FILE="$INSTALL_DIR/.install_token"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  STORED_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
-  NEW_TOKEN_HASH=$(echo -n "$INSTALL_TOKEN" | sha256sum | awk '{print $1}')
-  if [ -n "$INSTALL_TOKEN" ] && [ "$STORED_TOKEN" != "$NEW_TOKEN_HASH" ]; then
-    echo "New token detected — wiping existing data for fresh install..."
-    cd "$INSTALL_DIR/server" && docker compose down -v 2>/dev/null || true
-  else
-    echo "Updating existing installation..."
-  fi
+  echo "Updating existing installation..."
   git -C "$INSTALL_DIR" fetch origin
   git -C "$INSTALL_DIR" reset --hard origin/main
 else
@@ -938,7 +931,7 @@ if [ -n "$INSTALL_TOKEN" ]; then
   LAN_IP=$(hostname -I | awk '{print $1}')
   LAN_URL="https://${LAN_IP}:49200"
   echo "Registering server with Seamlean cloud (LAN: ${LAN_URL})..."
-  RESP=$(curl -sf -X POST "https://seamlean.com/api/register-server" \
+  RESP=$(curl -sf -X POST "https://api.seamlean.com/v1/register-server" \
     -H "Content-Type: application/json" \
     -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_name\":\"${SERVER_NAME}\",\"lan_url\":\"${LAN_URL}\"}" \
     2>/dev/null || echo '{"ok":false}')
@@ -952,7 +945,6 @@ if [ -n "$INSTALL_TOKEN" ]; then
     if [ -n "$TUNNEL_URL" ]; then
       sed -i "s|^SERVER_URL=.*|SERVER_URL=${TUNNEL_URL}|" .env
     fi
-    echo -n "$INSTALL_TOKEN" | sha256sum | awk '{print $1}' > "$TOKEN_FILE"
     echo "✅ Server registered! API key configured."
 
     # ── Install cloudflared for WAN access ──────────────────────────────────
@@ -1093,6 +1085,7 @@ async def github_release_webhook(request: Request):
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────
 
 @app.get("/bootstrap/{token}")
+@app.get("/v1/bootstrap/{token}")
 def bootstrap_proxy(token: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
