@@ -24,7 +24,7 @@ if (args.Contains("--install") || args.Contains("--uninstall"))
 if (NativeMessagingDetector.IsNativeMessagingHost())
 {
     await NativeMessagingDetector.RunAsync();
-    return;
+    return 0;
 }
 
 // Snake_case column names → PascalCase properties (e.g. machine_id → MachineId)
