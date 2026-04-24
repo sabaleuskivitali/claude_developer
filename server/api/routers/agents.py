@@ -12,7 +12,9 @@ _STATUS_OFFLINE = "offline"  # heartbeat > 15 min ago
 
 @router.get("/agents")
 async def list_agents(request: Request):
-    now_ms = int(time.time() * 1000)
+    now_ms       = int(time.time() * 1000)
+    one_hour_ago = now_ms - 3_600_000
+    one_day_ago  = now_ms - 86_400_000
 
     rows = await request.app.state.db.fetch("""
         SELECT DISTINCT ON (machine_id)
@@ -27,6 +29,31 @@ async def list_agents(request: Request):
         WHERE event_type = 'HeartbeatPulse'
         ORDER BY machine_id, timestamp_utc DESC
     """)
+
+    layer_rows = await request.app.state.db.fetch("""
+        SELECT
+            machine_id,
+            layer,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $1) AS events_1h,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $2) AS events_24h,
+            COUNT(*)                                     AS events_total
+        FROM events
+        WHERE timestamp_utc >= $2
+          AND event_type NOT IN ('HeartbeatPulse', 'SyncCompleted')
+          AND layer IS NOT NULL
+        GROUP BY machine_id, layer
+    """, one_hour_ago, one_day_ago)
+
+    layer_index: dict[str, dict] = {}
+    for lr in layer_rows:
+        mid = lr["machine_id"]
+        if mid not in layer_index:
+            layer_index[mid] = {}
+        layer_index[mid][lr["layer"]] = {
+            "events_1h":    int(lr["events_1h"]),
+            "events_24h":   int(lr["events_24h"]),
+            "events_total": int(lr["events_total"]),
+        }
 
     agents = []
     for r in rows:
@@ -50,6 +77,7 @@ async def list_agents(request: Request):
             "drift_ms":      r["drift_ms"],
             "last_seen_ts":  r["timestamp_utc"],
             "layer_stats":   r["layer_stats"],
+            "layer_counts":  layer_index.get(r["machine_id"], {}),
         })
 
     return {"agents": agents, "count": len(agents)}
