@@ -19,10 +19,8 @@ INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -BootstrapProfileUrl "https://seamlean.com/bootstrap/TOKEN"
-#   powershell -ExecutionPolicy Bypass -File install.ps1 -ApiKey "your-key" -ServerUrl "https://192.168.1.100:49213"
 
 param(
-    [string]$ApiKey             = "{API_KEY}",
     [string]$ServerUrl          = "",
     [string]$BootstrapProfileUrl = "{CLOUD_PROFILE_URL}"
 )
@@ -181,7 +179,6 @@ Write-Step "Configuring appsettings.json"
 try {{
     $cfgPath = "$InstallDir\appsettings.json"
     $cfg     = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    if ($ApiKey) {{ $cfg.AgentSettings.ApiKey = $ApiKey }}
     $cfg.AgentSettings.ServerUrl              = $ServerUrl
     $cfg.AgentSettings.ExtensionId            = $ExtensionId
     $cfg.AgentSettings.ServerThumbprint       = "{SERVER_THUMBPRINT}"
@@ -369,7 +366,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version",           required=True)
     parser.add_argument("--ext-id",            required=True)
-    parser.add_argument("--api-key",           default="")
     parser.add_argument("--server-thumbprint", default="")
     parser.add_argument("--profile-url",       default="")
     parser.add_argument("--out",               required=True)
@@ -379,7 +375,6 @@ def main():
         VERSION=args.version,
         GENERATED=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         EXTENSION_ID=args.ext_id,
-        API_KEY=args.api_key,
         SERVER_THUMBPRINT=args.server_thumbprint,
         CLOUD_PROFILE_URL=args.profile_url,
     )

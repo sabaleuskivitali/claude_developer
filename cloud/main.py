@@ -850,8 +850,16 @@ if ! docker compose version &>/dev/null 2>&1; then
 fi
 
 # ── Clone / update ────────────────────────────────────────────────────────────
+TOKEN_FILE="$INSTALL_DIR/.install_token"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  echo "Updating existing installation..."
+  STORED_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+  NEW_TOKEN_HASH=$(echo -n "$INSTALL_TOKEN" | sha256sum | awk '{print $1}')
+  if [ -n "$INSTALL_TOKEN" ] && [ "$STORED_TOKEN" != "$NEW_TOKEN_HASH" ]; then
+    echo "New token detected — wiping existing data for fresh install..."
+    cd "$INSTALL_DIR/server" && docker compose down -v 2>/dev/null || true
+  else
+    echo "Updating existing installation..."
+  fi
   git -C "$INSTALL_DIR" fetch origin
   git -C "$INSTALL_DIR" reset --hard origin/main
 else
@@ -926,6 +934,7 @@ if [ -n "$INSTALL_TOKEN" ]; then
     if [ -n "$TUNNEL_URL" ]; then
       sed -i "s|^SERVER_URL=.*|SERVER_URL=${TUNNEL_URL}|" .env
     fi
+    echo -n "$INSTALL_TOKEN" | sha256sum | awk '{print $1}' > "$TOKEN_FILE"
     echo "✅ Server registered! API key configured."
 
     # ── Install cloudflared for WAN access ──────────────────────────────────

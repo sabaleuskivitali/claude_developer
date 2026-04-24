@@ -206,7 +206,6 @@ jobs:
         python agent/tools/make_installer.py `
           --version           ${{ env.VERSION }} `
           --ext-id            ${{ env.EXTENSION_ID }} `
-          --api-key           "${{ secrets.AGENT_API_KEY }}" `
           --server-thumbprint "${{ secrets.SERVER_THUMBPRINT }}" `
           --profile-url       "${{ secrets.CLOUD_PROFILE_URL }}" `
           --out               build/Install-WinDiagSvc.ps1
