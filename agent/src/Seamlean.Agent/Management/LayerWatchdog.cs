@@ -89,8 +89,10 @@ public sealed class LayerWatchdog : BackgroundService
             }
         }
 
-        // If any critical layer has been stuck for 2+ consecutive check cycles → restart
-        var criticalLayers = new[] { "visual", "window", "agent" };
+        // If any critical layer has been stuck for 2+ consecutive check cycles → restart.
+        // visual is intentionally excluded: no screenshots simply means no active window;
+        // restarting the agent won't help and causes a restart loop on headless machines.
+        var criticalLayers = new[] { "window", "agent" };
         var needsRestart = stuckLayers
             .Where(l => criticalLayers.Contains(l))
             .Any(l => _stuckCycles.TryGetValue(l, out var c) && c >= RestartAfterCycles);

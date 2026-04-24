@@ -46,7 +46,7 @@ public sealed class LayerHealthTracker
         new Dictionary<string, int>
         {
             ["window"]  = 5,
-            ["visual"]  = 3,
+            ["visual"]  = 15,
             ["system"]  = 10,
             ["applogs"] = 5,
             ["browser"] = 0,   // Chrome may not be open — never "stuck"
