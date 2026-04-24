@@ -115,6 +115,33 @@ while True:
 PYEOF
 echo "Discovery: UDP beacon started on port 49101 (broadcast every 30s)"
 
+# Cloud heartbeat: ping every 5 minutes so cabinet shows live status
+if [ -n "${API_KEY:-}" ] && [ "${API_KEY}" != "pending" ] && [ -n "${CLOUD_URL:-}" ]; then
+    python3 - << 'PYEOF' &
+import time, os, urllib.request, ssl, sys
+
+api_key   = os.environ.get('API_KEY', '')
+cloud_url = os.environ.get('CLOUD_URL', '').rstrip('/')
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+while True:
+    try:
+        req = urllib.request.Request(
+            f"{cloud_url}/api/server-heartbeat",
+            method='POST',
+            headers={'X-Api-Key': api_key, 'Content-Length': '0'},
+            data=b'',
+        )
+        urllib.request.urlopen(req, context=ctx, timeout=5)
+    except Exception as e:
+        print(f'heartbeat error: {e}', file=sys.stderr)
+    time.sleep(300)
+PYEOF
+    echo "Cloud heartbeat: pinging ${CLOUD_URL} every 5m"
+fi
+
 exec uvicorn main:app \
     --host 0.0.0.0 \
     --port "$PORT" \

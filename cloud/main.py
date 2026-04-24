@@ -1,4 +1,5 @@
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -62,7 +63,7 @@ def init_db():
         conn.commit()
     except Exception:
         pass
-    for col in ["tunnel_url TEXT", "wan_url TEXT", "lan_url TEXT", "cf_tunnel_id TEXT"]:
+    for col in ["tunnel_url TEXT", "wan_url TEXT", "lan_url TEXT", "cf_tunnel_id TEXT", "heartbeat_at TEXT"]:
         try:
             conn.execute(f"ALTER TABLE servers ADD COLUMN {col}")
             conn.commit()
@@ -124,12 +125,43 @@ def _get_install_token(user_id: str) -> str:
 def _get_user_server(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-        "SELECT server_url, wan_url, lan_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
+        "SELECT server_url, wan_url, lan_url, api_key, server_name, heartbeat_at, tunnel_url FROM servers WHERE user_id=?",
+        (user_id,)
     ).fetchone()
     conn.close()
     if not row:
         return None
-    return {"server_url": row[0], "wan_url": row[1], "lan_url": row[2], "api_key": row[3], "server_name": row[4]}
+    return {
+        "server_url":   row[0],
+        "wan_url":      row[1],   # public IP — display only
+        "lan_url":      row[2],
+        "api_key":      row[3],
+        "server_name":  row[4],
+        "heartbeat_at": row[5],
+        "tunnel_url":   row[6],   # CF tunnel URL — health checks only
+    }
+
+
+def _is_cf_url(url: str) -> bool:
+    """CF tunnel URLs and custom domains are safe to health-check; raw IP:port URLs are not."""
+    return bool(url) and not re.match(r'https?://\d+\.\d+\.\d+\.\d+', url)
+
+
+def _heartbeat_age(heartbeat_at: str | None) -> tuple[int | None, str]:
+    """Returns (age_seconds, human_readable_string). age=None if no heartbeat."""
+    if not heartbeat_at:
+        return None, ""
+    try:
+        dt = datetime.datetime.fromisoformat(heartbeat_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        ago = int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds())
+        if ago < 60:   label = f"{ago}с"
+        elif ago < 3600: label = f"{ago // 60}м"
+        else:          label = f"{ago // 3600}ч"
+        return ago, f" · {label} назад"
+    except Exception:
+        return None, ""
 
 
 # ── Cloudflare Tunnel API ─────────────────────────────────────────────────────
@@ -450,43 +482,61 @@ async def register_server(request: Request):
 
         cf_tunnel_id = existing[1] if existing else None
         tunnel_token = None
-        wan_url      = None
+        cf_url       = None  # CF tunnel URL for health checks (not shown to user)
 
         # CF tunnel: optional — only created when CF credentials are configured.
-        # On migration (reinstall with same token): lan_url updated, tunnel token re-issued
-        # for the same tunnel so cloudflared starts on the new machine automatically.
         if _CF_ACCOUNT_ID and _CF_API_TOKEN:
             if not cf_tunnel_id:
-                # First install: create a new dedicated tunnel for this server
                 try:
                     cf = _cf_create_server_tunnel(server_name)
                     cf_tunnel_id = cf["tunnel_id"]
                     tunnel_token = cf["tunnel_token"]
-                    wan_url      = cf["wan_url"]
+                    cf_url       = cf["wan_url"]
                 except Exception:
-                    pass  # non-fatal: server registers in LAN-only mode
+                    pass
             else:
                 # Reinstall / migration: re-issue token for existing tunnel.
-                # New machine gets same tunnel_id → same wan_url, cloudflared reconnects.
                 try:
-                    result      = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
+                    result       = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
                     tunnel_token = result["result"]
-                    wan_url      = f"https://{cf_tunnel_id}.cfargotunnel.com"
+                    cf_url       = f"https://{cf_tunnel_id}.cfargotunnel.com"
                 except Exception:
-                    pass  # non-fatal: WAN access temporarily unavailable
+                    pass
 
-        # Always update lan_url so cabinet health checks use current LAN address after migration
+        # wan_url always = public IP from request header (displayed in cabinet, not used for health checks)
+        wan_url = f"https://{client_ip}:443"
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         conn.execute(
             """INSERT OR REPLACE INTO servers
-               (user_id, server_url, lan_url, wan_url, cf_tunnel_id, api_key, server_name)
-               VALUES (?,?,?,?,?,?,?)""",
-            (user_id, lan_url or server_url, lan_url or None, wan_url, cf_tunnel_id, api_key, server_name)
+               (user_id, server_url, lan_url, wan_url, tunnel_url, cf_tunnel_id, api_key, server_name, heartbeat_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (user_id, lan_url or server_url, lan_url or None, wan_url, cf_url, cf_tunnel_id, api_key, server_name, now)
         )
         conn.commit()
         conn.close()
         return {"ok": True, "api_key": api_key, "tunnel_token": tunnel_token}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ── Server heartbeat (called by server every 5 min) ──────────────────────────
+
+@app.post("/api/server-heartbeat")
+async def server_heartbeat(request: Request):
+    api_key = request.headers.get("X-Api-Key", "")
+    if not api_key:
+        return {"ok": False, "error": "Missing api key"}
+    conn = sqlite3.connect(DB_PATH)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE servers SET heartbeat_at=? WHERE api_key=?", (now, api_key)
+    )
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        return {"ok": False, "error": "Unknown api key"}
+    return {"ok": True}
 
 
 # ── Cabinet ───────────────────────────────────────────────────────────────────
@@ -546,19 +596,22 @@ def cabinet(request: Request):
 
     # ── Server panel ──────────────────────────────────────────────────────────
     if user_server:
-        wan_url = user_server.get("wan_url")
-        api_key = user_server["api_key"]
+        wan_url      = user_server.get("wan_url")    # public IP — display only
+        tunnel_url   = user_server.get("tunnel_url")  # CF URL — health checks
+        api_key      = user_server["api_key"]
+        hb_age, hb_s = _heartbeat_age(user_server.get("heartbeat_at"))
 
-        if wan_url:
-            health        = _api(wan_url, api_key, "/health")
-            agents_data   = (_api(wan_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+        # Health check only via CF tunnel URL (never via raw public IP)
+        if tunnel_url:
+            health      = _api(tunnel_url, api_key, "/health")
+            agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
         else:
-            health        = None
-            agents_data   = []
+            health      = None
+            agents_data = []
 
+        extra = ""
         if health and health.get("status") in ("ok", "degraded"):
-            status_badge = '<span class="badge online">🟢 Онлайн</span>'
-            extra = ""
+            status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
             if health.get("version"):
                 extra += f'<tr><td style="color:#6b7280">Версия</td><td>{health["version"]}</td></tr>'
             if health.get("db"):
@@ -567,23 +620,27 @@ def cabinet(request: Request):
                 extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}{db_size}</td></tr>'
             if health.get("disk_free_gb") is not None:
                 extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
-        elif wan_url is None:
-            status_badge = '<span class="badge warning">⚠️ Недоступен или работает только в LAN режиме</span>'
-            extra = ""
+        elif hb_age is not None and hb_age < 600:
+            status_badge = f'<span class="badge warning">🟡 Работает (нет WAN){hb_s}</span>'
+        elif hb_age is not None:
+            status_badge = f'<span class="badge offline">🔴 Нет связи{hb_s}</span>'
         else:
-            status_badge = '<span class="badge offline">🔴 Недоступен</span>'
-            extra = ""
+            status_badge = '<span class="badge warning">⚠️ Ожидание сервера</span>'
+
+        lan_url  = user_server.get("lan_url") or user_server["server_url"]
+        wan_row  = (f'<tr><td style="color:#6b7280">WAN адрес</td><td><code>{wan_url}</code></td></tr>'
+                    if wan_url else "")
 
         server_panel = f"""
   <div class="card">
     <div class="sec-title">{user_server['server_name']}</div>
     <table>
-      <tr><td style="color:#6b7280;width:160px">LAN адрес</td><td><code>{user_server['lan_url'] or user_server['server_url']}</code></td></tr>
+      <tr><td style="color:#6b7280;width:160px">LAN адрес</td><td><code>{lan_url}</code></td></tr>
+      {wan_row}
       <tr><td style="color:#6b7280">Статус</td><td>{status_badge}</td></tr>
       {extra}
     </table>
   </div>"""
-        # Show install command whenever server is registered, regardless of health/reachability
         bootstrap_url = user_server["server_url"]
     else:
         install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
@@ -728,6 +785,7 @@ SMB_MOUNT_PATH=/mnt/diag
 SMB_SHARE_PATH=/mnt/diag
 ETL_INTERVAL_MINUTES=60
 SERVER_URL=
+CLOUD_URL=
 EOF
   echo "Generated secrets in .env (api_key will be set by cloud)"
 fi
@@ -767,6 +825,7 @@ if [ -n "$INSTALL_TOKEN" ]; then
     API_KEY=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['api_key'])")
     TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_token'); print(v if v else '')")
     sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
+    sed -i "s|^CLOUD_URL=.*|CLOUD_URL=https://seamlean.com|" .env
     echo "✅ Server registered! API key configured."
 
     # ── Install cloudflared for WAN access ──────────────────────────────────
@@ -854,10 +913,10 @@ def bootstrap_proxy(token: str):
     user_server = _get_user_server(row[0])
     if not user_server:
         return JSONResponse(status_code=503, content={"error": "Server not registered"})
-    wan_url = user_server.get("wan_url")
-    if not wan_url:
-        return JSONResponse(status_code=503, content={"error": "Server has no WAN URL (LAN-only mode)"})
-    data = _api(wan_url, user_server["api_key"], "/api/v1/bootstrap/active")
+    tunnel_url = user_server.get("tunnel_url")
+    if not tunnel_url:
+        return JSONResponse(status_code=503, content={"error": "Server has no CF tunnel (LAN-only mode)"})
+    data = _api(tunnel_url, user_server["api_key"], "/api/v1/bootstrap/active")
     if not data:
         return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
     # Re-sign with cloud CA key so agent trusts one stable root of trust.
