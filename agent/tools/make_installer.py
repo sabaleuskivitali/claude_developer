@@ -181,13 +181,14 @@ Write-Step "Configuring appsettings.json"
 try {{
     $cfgPath = "$InstallDir\appsettings.json"
     $cfg     = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    $cfg.AgentSettings.ApiKey            = $ApiKey
-    $cfg.AgentSettings.ServerUrl         = $ServerUrl
-    $cfg.AgentSettings.ExtensionId       = $ExtensionId
-    $cfg.AgentSettings.ServerThumbprint  = "{SERVER_THUMBPRINT}"
-    $cfg.AgentSettings.CloudProfileUrl   = $BootstrapProfileUrl
+    if ($ApiKey) {{ $cfg.AgentSettings.ApiKey = $ApiKey }}
+    $cfg.AgentSettings.ServerUrl              = $ServerUrl
+    $cfg.AgentSettings.ExtensionId            = $ExtensionId
+    $cfg.AgentSettings.ServerThumbprint       = "{SERVER_THUMBPRINT}"
+    $cfg.AgentSettings.CloudProfileUrl        = $BootstrapProfileUrl
+    $cfg.AgentSettings.MaxStartupJitterSeconds = 0
     $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-    Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint, CloudProfileUrl written"
+    Write-OK "Config written (jitter=0 for fast first sync)"
 }} catch {{
     Send-InstallError "patch_config" "$_"
     Write-Warn "Config patch failed: $_"
