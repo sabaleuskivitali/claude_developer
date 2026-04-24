@@ -511,18 +511,20 @@ async def register_server(request: Request):
 
         user_id  = row[0]
         existing = conn.execute(
-            "SELECT api_key, cf_tunnel_id FROM servers WHERE user_id=?", (user_id,)
+            "SELECT api_key, cf_tunnel_id, tunnel_url FROM servers WHERE user_id=?", (user_id,)
         ).fetchone()
 
         api_key = existing[0] if existing else uuid.uuid4().hex + uuid.uuid4().hex
 
         cf_tunnel_id = existing[1] if existing else None
         tunnel_token = None
-        cf_url       = None  # CF tunnel URL for health checks (not shown to user)
+        cf_url       = existing[2] if existing else None  # preserve stored tunnel_url
 
         # CF tunnel: optional — only created when CF credentials are configured.
+        # Also recreate if existing tunnel_url is old raw cfargotunnel.com format (no public hostname).
+        _old_format = bool(cf_url and re.match(r'https://[0-9a-f-]+\.cfargotunnel\.com', cf_url))
         if _CF_ACCOUNT_ID and _CF_API_TOKEN:
-            if not cf_tunnel_id:
+            if not cf_tunnel_id or _old_format:
                 try:
                     cf = _cf_create_server_tunnel(server_name)
                     cf_tunnel_id = cf["tunnel_id"]
@@ -531,11 +533,11 @@ async def register_server(request: Request):
                 except Exception:
                     pass
             else:
-                # Reinstall / migration: re-issue token for existing tunnel.
+                # Reinstall: re-issue token for existing tunnel, keep existing tunnel_url.
                 try:
                     result       = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
                     tunnel_token = result["result"]
-                    cf_url       = f"https://{cf_tunnel_id}.cfargotunnel.com"
+                    # cf_url already set from existing row — don't overwrite
                 except Exception:
                     pass
 
