@@ -18,12 +18,13 @@ INSTALLER_TEMPLATE = r'''#Requires -RunAsAdministrator
 # Generated: {GENERATED}
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -ApiKey "your-key"
-#   powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1 -ApiKey "key" -ServerUrl "https://192.168.1.100:49213"
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -BootstrapProfileUrl "https://seamlean.com/bootstrap/TOKEN"
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -ApiKey "your-key" -ServerUrl "https://192.168.1.100:49213"
 
 param(
-    [string]$ApiKey    = "{API_KEY}",
-    [string]$ServerUrl = ""
+    [string]$ApiKey             = "{API_KEY}",
+    [string]$ServerUrl          = "",
+    [string]$BootstrapProfileUrl = "{CLOUD_PROFILE_URL}"
 )
 
 $ErrorActionPreference = "Continue"
@@ -184,7 +185,7 @@ try {{
     $cfg.AgentSettings.ServerUrl         = $ServerUrl
     $cfg.AgentSettings.ExtensionId       = $ExtensionId
     $cfg.AgentSettings.ServerThumbprint  = "{SERVER_THUMBPRINT}"
-    $cfg.AgentSettings.CloudProfileUrl   = "{CLOUD_PROFILE_URL}"
+    $cfg.AgentSettings.CloudProfileUrl   = $BootstrapProfileUrl
     $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
     Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint, CloudProfileUrl written"
 }} catch {{
