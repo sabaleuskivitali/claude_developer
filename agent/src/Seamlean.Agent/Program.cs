@@ -3,10 +3,17 @@ using Seamlean.Agent.Bootstrap;
 using Seamlean.Agent.Browser;
 using Seamlean.Agent.Capture;
 using Seamlean.Agent.Capture.AppLogScanner;
+using Seamlean.Agent.Installer;
 using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
 using Seamlean.Agent.Storage;
 using Seamlean.Agent.Sync;
+
+// -----------------------------------------------------------------------
+// Installer mode — run before anything else so no DI/SQLite is initialised.
+// -----------------------------------------------------------------------
+if (args.Contains("--install") || args.Contains("--uninstall"))
+    return await Installer.RunAsync(args);
 
 // -----------------------------------------------------------------------
 // Native Messaging Host mode — launched by Chrome/Edge as subprocess.
