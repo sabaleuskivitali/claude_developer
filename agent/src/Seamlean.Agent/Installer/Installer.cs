@@ -60,6 +60,11 @@ public static class Installer
         Directory.CreateDirectory(Path.Combine(dataDir, "logs"));
         Console.WriteLine("    OK: directories created");
 
+        // Grant BUILTIN\Users Modify access to data dir so the agent (runs as Users) can write.
+        // The installer runs as admin; the scheduled task runs as BUILTIN\Users (LeastPrivilege).
+        RunSilent("icacls", $"\"{dataDir}\" /grant \"BUILTIN\\Users:(OI)(CI)M\" /T /C /Q");
+        Console.WriteLine("    OK: data dir write permissions granted to Users");
+
         // 2. Copy exe to install dir
         var currentExe = Process.GetCurrentProcess().MainModule?.FileName
             ?? Environment.ProcessPath!;
