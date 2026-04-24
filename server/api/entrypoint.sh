@@ -131,7 +131,8 @@ while True:
         req = urllib.request.Request(
             f"{cloud_url}/api/server-heartbeat",
             method='POST',
-            headers={'X-Api-Key': api_key, 'Content-Length': '0'},
+            headers={'X-Api-Key': api_key, 'Content-Length': '0',
+                     'User-Agent': 'Seamlean-Server/1.0'},
             data=b'',
         )
         urllib.request.urlopen(req, context=ctx, timeout=5)
