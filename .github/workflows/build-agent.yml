@@ -250,7 +250,7 @@ jobs:
     - name: Upload installer artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Install-WinDiagSvc-${{ env.VERSION }}
+        name: Seamlean-Agent-${{ env.VERSION }}
         path: |
           build/Install-WinDiagSvc.ps1
           build/Seamlean.Agent.exe
