@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import time
@@ -9,6 +10,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import db, storage
+
+logger = logging.getLogger(__name__)
 from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap
 
 def _read_version() -> str:
@@ -37,11 +40,18 @@ async def _ensure_bootstrap(pool):
     ctx = DeploymentContext(server_url=server_url, tenant_id="default", site_id="default")
     try:
         signed = generate_profile(ctx)
-    except Exception:
-        return
-    profile_id = await bs_store.create(pool, signed, ctx)
-    await bs_store.approve(pool, profile_id)
-    await bs_store.publish(pool, profile_id)
+        profile_id = await bs_store.create(pool, signed, ctx)
+        await bs_store.approve(pool, profile_id)
+        await bs_store.publish(pool, profile_id)
+        token = signed.get_profile().enrollment.token
+        expires_at = signed.get_profile().enrollment.expires_at
+        from datetime import datetime, timezone
+        await pool.execute(
+            "INSERT INTO enrollment_tokens (token, profile_id, expires_at) VALUES ($1, $2::UUID, $3)",
+            token, profile_id, datetime.fromisoformat(expires_at).astimezone(timezone.utc),
+        )
+    except Exception as e:
+        logger.error("_ensure_bootstrap failed: %s", e)
 
 
 @asynccontextmanager
