@@ -62,6 +62,15 @@ def init_db():
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS install_codes (
+        code        TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now')),
+        expires_at  TEXT NOT NULL,
+        max_uses    INTEGER DEFAULT 999,
+        used_count  INTEGER DEFAULT 0,
+        rate_limit  INTEGER DEFAULT 10
+    )""")
     conn.commit()
     # migrate: add install_token if column missing
     try:
@@ -1112,6 +1121,150 @@ def bootstrap_proxy(token: str):
         raw_bytes = base64.b64decode(signed_data)
         cloud_signature = _sign_data(raw_bytes)
         return {"signed_data": signed_data, "signature": cloud_signature}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Re-sign failed: {e}"})
+
+
+# ── Install code generation (cabinet) ────────────────────────────────────────
+
+@app.post("/cabinet/generate-install-code")
+async def generate_install_code(request: Request):
+    token = request.cookies.get("session")
+    user  = _db_user_by_session(token)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+
+    import base64 as _b64
+    code = _b64.b32encode(secrets.token_bytes(10)).decode().rstrip("=").lower()
+
+    expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=72)).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO install_codes (code, user_id, expires_at) VALUES (?,?,?)",
+        (code, user["id"], expires_at)
+    )
+    conn.commit()
+    conn.close()
+    return {"code": code, "expires_at": expires_at, "url": f"https://seamlean.com/i/{code}"}
+
+
+# ── Bootstrap-via-link landing page ──────────────────────────────────────────
+
+@app.get("/i/{code}", response_class=HTMLResponse)
+def install_landing(code: str):
+    conn = sqlite3.connect(DB_PATH)
+    row  = conn.execute(
+        "SELECT user_id, expires_at FROM install_codes WHERE code=?", (code,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return HTMLResponse("<h1>Ссылка недействительна</h1>", status_code=404)
+
+    expires_at = row[1]
+    if expires_at and datetime.datetime.fromisoformat(expires_at).replace(
+            tzinfo=datetime.timezone.utc) < datetime.datetime.now(datetime.timezone.utc):
+        return HTMLResponse("<h1>Ссылка истекла</h1>", status_code=410)
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><title>Установка Seamlean Agent</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 20px}}
+code{{background:#f1f5f9;padding:4px 8px;border-radius:4px;font-size:.95em}}
+.cmd{{background:#1e293b;color:#e2e8f0;padding:16px;border-radius:8px;font-family:monospace;font-size:.9em;margin:12px 0}}
+</style></head>
+<body>
+<h1>Установка Seamlean Agent</h1>
+<p>1. Скачайте исполняемый файл агента:</p>
+<p><a href="https://seamlean.com/agent" download="Seamlean.Agent.exe">⬇ Скачать Seamlean.Agent.exe</a></p>
+<p>2. Запустите от имени администратора:</p>
+<div class="cmd">Seamlean.Agent.exe --install --install-code {code}</div>
+<p>Агент будет автоматически настроен и запущен.</p>
+</body></html>"""
+    return HTMLResponse(html)
+
+
+# ── Installer bootstrap endpoint (called by Installer.cs) ────────────────────
+
+@app.post("/v1/installer/bootstrap")
+async def installer_bootstrap(request: Request):
+    """
+    Validates install_code, fetches and re-signs bootstrap profile from tenant server.
+    Rate-limited per code (10 req/hour per IP).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    install_code = body.get("install_code", "").strip().lower()
+    if not install_code:
+        return JSONResponse(status_code=400, content={"error": "install_code required"})
+
+    client_ip = (
+        request.headers.get("CF-Connecting-IP") or
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or
+        request.client.host
+    )
+
+    conn = sqlite3.connect(DB_PATH)
+    row  = conn.execute(
+        "SELECT user_id, expires_at, max_uses, used_count FROM install_codes WHERE code=?",
+        (install_code,)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return JSONResponse(status_code=403, content={"error": "Invalid install code"})
+
+    user_id, expires_at, max_uses, used_count = row
+
+    if expires_at and datetime.datetime.fromisoformat(expires_at).replace(
+            tzinfo=datetime.timezone.utc) < datetime.datetime.now(datetime.timezone.utc):
+        conn.close()
+        return JSONResponse(status_code=403, content={"error": "Install code expired"})
+
+    if used_count >= max_uses:
+        conn.close()
+        return JSONResponse(status_code=403, content={"error": "Install code usage limit reached"})
+
+    conn.execute(
+        "UPDATE install_codes SET used_count = used_count + 1 WHERE code=?", (install_code,)
+    )
+    conn.commit()
+    conn.close()
+
+    user_server = _get_user_server(user_id)
+    if not user_server:
+        return JSONResponse(status_code=503, content={"error": "Server not registered"})
+
+    tunnel_url = user_server.get("tunnel_url")
+    if not tunnel_url:
+        return JSONResponse(status_code=503, content={"error": "Server has no CF tunnel"})
+
+    # SSRF: only allow https://
+    if not tunnel_url.startswith("https://"):
+        return JSONResponse(status_code=502, content={"error": "Invalid server URL"})
+
+    data = _api(tunnel_url, user_server["api_key"], "/api/v1/bootstrap/active")
+    if not data:
+        return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
+
+    signed_data = data.get("signed_data")
+    if not signed_data:
+        return JSONResponse(status_code=502, content={"error": "Server returned invalid profile"})
+
+    try:
+        raw_bytes        = base64.b64decode(signed_data)
+        cloud_signature  = _sign_data(raw_bytes)
+        return {
+            "profile": {"signed_data": signed_data, "signature": cloud_signature},
+            "install_config": {
+                "service_name": "WinDiagSvc",
+                "install_dir":  r"C:\Program Files\Windows Diagnostics",
+                "data_dir":     r"%ProgramData%\Microsoft\Diagnostics",
+            },
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Re-sign failed: {e}"})
 
