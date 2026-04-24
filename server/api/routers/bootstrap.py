@@ -44,7 +44,8 @@ async def enroll_agent(request: Request, body: dict):
     Exchange enrollment token for agent registration.
     Body: {"machine_id": "...", "token": "..."}
     Returns: {"enrolled": true, "api_key": "..."}
-    The enrollment token is single-use. A new independent API key is issued on success.
+    Token is multi-use: any number of machines can enroll within the expiry window.
+    Each (token, machine_id) pair is tracked; same machine re-enrolling is idempotent.
     """
     machine_id = body.get("machine_id", "")
     token      = body.get("token", "")
@@ -55,27 +56,31 @@ async def enroll_agent(request: Request, body: dict):
 
     row = await request.app.state.db.fetchrow(
         """
-        SELECT et.profile_id::TEXT, et.used, et.expires_at, bp.status
+        SELECT et.profile_id::TEXT, et.expires_at, bp.status
           FROM enrollment_tokens et
           JOIN bootstrap_profiles bp ON bp.profile_id = et.profile_id
          WHERE et.token = $1
         """,
         token,
     )
-    # Return identical error for "not found" and "used" to avoid token enumeration
-    if not row or row["used"]:
+    if not row:
         raise HTTPException(403, "Invalid or expired enrollment token")
     if row["expires_at"] and row["expires_at"].astimezone(timezone.utc) < datetime.now(timezone.utc):
         raise HTTPException(403, "Invalid or expired enrollment token")
     if row["status"] not in ("active", "published"):
         raise HTTPException(403, "Bootstrap profile not active")
 
-    # Generate a new independent API key — enrollment token is not reused
+    # Generate a new independent API key for this machine
     api_key = secrets.token_urlsafe(32)
 
-    # Mark enrollment token used atomically with API key issuance
+    # Record this (token, machine_id) use — idempotent, allows re-enrollment from same machine
     await request.app.state.db.execute(
-        "UPDATE enrollment_tokens SET used = TRUE, used_at = NOW(), machine_id = $1 WHERE token = $2",
+        "INSERT INTO enrollment_token_uses (token, machine_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        token, machine_id,
+    )
+    # Mark token as ever-used (operational visibility only — no longer gates enrollment)
+    await request.app.state.db.execute(
+        "UPDATE enrollment_tokens SET used = TRUE, used_at = COALESCE(used_at, NOW()), machine_id = COALESCE(machine_id, $1) WHERE token = $2 AND used = FALSE",
         machine_id, token,
     )
     await store.record_agent_enrollment(

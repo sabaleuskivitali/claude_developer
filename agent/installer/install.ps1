@@ -115,27 +115,50 @@ if ($ShareUser -and $SharePass) {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Install Windows Service via NSSM
+# 6. Register as Scheduled Task (runs in the logged-on user's session)
+#    Trigger: AtLogOn (any user) — agent starts in the user's desktop session,
+#    which gives ScreenshotWorker and WindowWatcher access to the user's screen.
+#    Runs at LimitedAccess (normal user token) — no elevation needed for capture.
 # ---------------------------------------------------------------------------
-Write-Step "Installing Windows Service: $ServiceName"
-$nssm = "$InstallDir\nssm.exe"
-$exe  = "$InstallDir\WinDiagSvc.exe"
+Write-Step "Registering Scheduled Task: $ServiceName"
+$exe = "$InstallDir\WinDiagSvc.exe"
 
-# Remove old if exists (ignore errors if service doesn't exist yet)
-try { & $nssm stop   $ServiceName 2>$null } catch { }
-try { & $nssm remove $ServiceName confirm 2>$null } catch { }
+# Remove legacy NSSM Windows Service if it exists from a previous install
+$nssm = "$InstallDir\nssm.exe"
+if (Test-Path $nssm) {
+    try { & $nssm stop   $ServiceName 2>$null } catch { }
+    try { & $nssm remove $ServiceName confirm 2>$null } catch { }
+    $LASTEXITCODE = 0
+}
+# Also remove via sc.exe in case nssm is gone but service entry remains
+try { sc.exe delete $ServiceName 2>$null } catch { }
 $LASTEXITCODE = 0
 
-& $nssm install $ServiceName $exe
-& $nssm set     $ServiceName AppDirectory     $InstallDir
-& $nssm set     $ServiceName ObjectName       LocalSystem
-& $nssm set     $ServiceName Start            SERVICE_AUTO_START
-& $nssm set     $ServiceName AppPriority      BELOW_NORMAL_PRIORITY_CLASS
-& $nssm set     $ServiceName DisplayName      $DisplayName
-& $nssm set     $ServiceName Description      "Windows Diagnostics Service"
-& $nssm set     $ServiceName AppStdoutCreationDisposition Overwrite
-& $nssm set     $ServiceName AppNoConsole     1
-Write-OK "Service installed"
+# Allow Users group to modify appsettings.json so EnsureIdentity() can write
+# MachineId/UserId on first run (Program Files is read-only for normal users)
+icacls "$InstallDir\appsettings.json" /grant "BUILTIN\Users:(M)" | Out-Null
+
+$action    = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $InstallDir
+$trigger   = New-ScheduledTaskTrigger -AtLogOn
+$principal = New-ScheduledTaskPrincipal `
+    -GroupId "BUILTIN\Users" `
+    -LogonType Interactive `
+    -RunLevel LimitedAccess
+$settings  = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -ExecutionTimeLimit 0 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 9999
+Register-ScheduledTask `
+    -TaskName  $ServiceName `
+    -Action    $action `
+    -Trigger   $trigger `
+    -Principal $principal `
+    -Settings  $settings `
+    -Force | Out-Null
+Write-OK "Scheduled Task registered (trigger: AtLogOn, principal: BUILTIN\Users)"
 
 # ---------------------------------------------------------------------------
 # 7. Native Messaging Host — Chrome and Edge
@@ -187,16 +210,27 @@ if (Test-Path $extCrx) {
 }
 
 # ---------------------------------------------------------------------------
-# 9. Start service — MachineId/UserId will be generated on first run
+# 9. Start task for the current user (if running interactively as a real user)
+#    On unattended/GPO deploys the task will fire automatically at next logon.
 # ---------------------------------------------------------------------------
-Write-Step "Starting service"
-Start-Service -Name $ServiceName
-Start-Sleep -Seconds 3
-$svc = Get-Service -Name $ServiceName
-if ($svc.Status -eq "Running") {
-    Write-OK "Service is running"
+Write-Step "Starting agent"
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+# Only attempt immediate start when running as a real interactive user (not SYSTEM/GPO)
+if ($currentUser -notmatch "^(NT AUTHORITY|SYSTEM)" ) {
+    try {
+        Start-ScheduledTask -TaskName $ServiceName
+        Start-Sleep -Seconds 3
+        $state = (Get-ScheduledTask -TaskName $ServiceName).State
+        if ($state -eq "Running") {
+            Write-OK "Agent started (state: Running)"
+        } else {
+            Write-Warn "Agent state: $state — will start automatically at next logon"
+        }
+    } catch {
+        Write-Warn "Could not start task immediately: $_ — will start at next logon"
+    }
 } else {
-    Write-Warn "Service status: $($svc.Status) - check logs in $DataDir\logs"
+    Write-OK "Deployed via GPO/SYSTEM — agent will start when a user logs on"
 }
 
 # ---------------------------------------------------------------------------
@@ -204,7 +238,8 @@ if ($svc.Status -eq "Running") {
 # ---------------------------------------------------------------------------
 Write-Host "`n========================================" -ForegroundColor Green
 Write-Host " Installation complete!" -ForegroundColor Green
-Write-Host " Service  : $DisplayName ($ServiceName)"
+Write-Host " Task     : $DisplayName ($ServiceName)"
+Write-Host " Trigger  : AtLogOn (any user, their desktop session)"
 Write-Host " Data dir : $DataDir"
 Write-Host " Logs     : $DataDir\logs"
 Write-Host " SMB share: $(if ($SharePath) { $SharePath } else { 'auto (domain Integrated Auth)' })"

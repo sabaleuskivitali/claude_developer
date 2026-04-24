@@ -1,21 +1,25 @@
 import base64
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import sqlite3
 import ssl
+import time
 import urllib.request
 import uuid
 from pathlib import Path
 
-_CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-_CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
-_CF_DNS_TOKEN  = os.environ.get("CF_DNS_TOKEN", "")
-_CF_ZONE_ID    = os.environ.get("CF_ZONE_ID", "")
-_CF_BASE       = "https://api.cloudflare.com/client/v4"
+_CF_ACCOUNT_ID         = os.environ.get("CF_ACCOUNT_ID", "")
+_CF_API_TOKEN          = os.environ.get("CF_API_TOKEN", "")
+_CF_DNS_TOKEN          = os.environ.get("CF_DNS_TOKEN", "")
+_CF_ZONE_ID            = os.environ.get("CF_ZONE_ID", "")
+_CF_BASE               = "https://api.cloudflare.com/client/v4"
+_GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+_CLOUD_VERSION         = Path("/app/VERSION").read_text().strip() if Path("/app/VERSION").exists() else "unknown"
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -75,6 +79,20 @@ def init_db():
 
 
 init_db()
+
+
+def _config_get(key: str):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _config_set(key: str, value: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT OR REPLACE INTO config(key,value) VALUES(?,?)", (key, value))
+    conn.commit()
+    conn.close()
 
 
 # ── Cloud CA (root of trust for bootstrap profiles) ───────────────────────────
@@ -976,16 +994,33 @@ def install_sh():
 
 # ── Agent package download ────────────────────────────────────────────────────
 _GITHUB_REPO = "sabaleuskivitali/claude_developer"
-_agent_url_cache: dict = {"url": None, "ts": 0}
+_agent_url_cache: dict = {"url": None, "ts": 0.0}
 
-def _get_agent_url():
-    import time
+
+def _get_agent_url() -> str | None:
+    """Return the latest agent download URL.
+
+    Priority:
+    1. In-memory cache (5 min TTL) — warm path after webhook fires
+    2. DB (persisted by webhook) — survives container restarts
+    3. GitHub API poll with per_page=100 — startup fallback only, used once if DB empty
+    """
     now = time.time()
     if _agent_url_cache["url"] and now - _agent_url_cache["ts"] < 300:
         return _agent_url_cache["url"]
+
+    # Cold start: load from DB first to avoid a GitHub API call on every restart
+    if not _agent_url_cache["url"]:
+        cached = _config_get("latest_agent_url")
+        if cached:
+            _agent_url_cache["url"] = cached
+            _agent_url_cache["ts"] = now - 290  # treat as almost-expired so next miss refreshes
+            return cached
+
+    # Fallback: poll GitHub API (used at startup when DB is empty or cache expired)
     try:
         req = urllib.request.Request(
-            f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases?per_page=100",
             headers={"Accept": "application/vnd.github+json", "User-Agent": "Seamlean-Cloud/1.0"},
         )
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -997,10 +1032,12 @@ def _get_agent_url():
                         url = asset["browser_download_url"]
                         _agent_url_cache["url"] = url
                         _agent_url_cache["ts"] = now
+                        _config_set("latest_agent_url", url)
                         return url
     except Exception:
         pass
-    return None
+    return _agent_url_cache["url"]  # return stale cache on GitHub error rather than None
+
 
 @app.get("/agent")
 def agent_download():
@@ -1008,6 +1045,49 @@ def agent_download():
     if url:
         return RedirectResponse(url, status_code=302)
     return JSONResponse(status_code=503, content={"error": "Agent release not found on GitHub"})
+
+
+@app.post("/api/github/release")
+async def github_release_webhook(request: Request):
+    """GitHub webhook receiver for Release events.
+
+    Configure in GitHub: Settings → Webhooks → Add webhook
+      Payload URL: https://seamlean.com/api/github/release
+      Content type: application/json
+      Secret: value of GITHUB_WEBHOOK_SECRET env var
+      Events: Releases
+    """
+    body = await request.body()
+
+    if _GITHUB_WEBHOOK_SECRET:
+        sig_header = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(_GITHUB_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            return JSONResponse(status_code=401, content={"error": "Invalid signature"})
+
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    # Only act on published releases tagged agent/vX.Y.Z
+    if payload.get("action") != "published":
+        return {"ok": True, "skipped": True, "reason": "not a published event"}
+
+    release = payload.get("release", {})
+    tag = release.get("tag_name", "")
+    if not tag.startswith("agent/"):
+        return {"ok": True, "skipped": True, "reason": "not an agent release"}
+
+    for asset in release.get("assets", []):
+        if asset["name"] == "WinDiagSvc.zip":
+            url = asset["browser_download_url"]
+            _agent_url_cache["url"] = url
+            _agent_url_cache["ts"] = time.time()
+            _config_set("latest_agent_url", url)
+            return {"ok": True, "tag": tag, "url": url}
+
+    return JSONResponse(status_code=422, content={"error": "WinDiagSvc.zip not found in release assets"})
 
 
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────
@@ -1052,4 +1132,4 @@ def robots():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": _CLOUD_VERSION}

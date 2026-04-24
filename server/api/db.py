@@ -108,6 +108,17 @@ MIGRATIONS = [
         error       TEXT
     );
     """,
+    # Multi-use enrollment tokens: track per-(token, machine) pair instead of global used flag
+    """
+    CREATE TABLE IF NOT EXISTS enrollment_token_uses (
+        token      TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        used_at    TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (token, machine_id)
+    );
+    DROP INDEX IF EXISTS idx_enrollment_token;
+    CREATE INDEX IF NOT EXISTS idx_enrollment_token ON enrollment_tokens (token);
+    """,
     # Views — DROP + CREATE so column changes always apply cleanly
     """
     DROP VIEW IF EXISTS events_corrected CASCADE;

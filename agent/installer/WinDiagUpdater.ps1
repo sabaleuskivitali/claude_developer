@@ -1,6 +1,7 @@
 # WinDiagUpdater.ps1
-# Autonomous updater. Launched by UpdateManager via Scheduled Task.
-# Runs as LocalSystem outside the service process — safe to replace the exe.
+# Autonomous updater. Launched by HttpUpdateManager via Scheduled Task (SYSTEM).
+# Runs as SYSTEM outside the agent process — safe to replace the exe.
+# Agent itself runs as a per-user scheduled task (AtLogOn/Interactive), not a Windows Service.
 
 param()
 
@@ -24,18 +25,20 @@ if (Test-Path $settingsPath) {
     }
 }
 
-# --- Wait for service to fully stop ---
+# --- Stop the agent scheduled task (kills the running process) ---
 Start-Sleep -Seconds 5
 try {
-    $svc = Get-Service -Name $ServiceName -ErrorAction Stop
-    if ($svc.Status -ne "Stopped") {
-        Write-Log "Stopping $ServiceName..."
-        Stop-Service -Name $ServiceName -Force
-        $svc.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+    $task = Get-ScheduledTask -TaskName $ServiceName -ErrorAction Stop
+    if ($task.State -eq "Running") {
+        Write-Log "Stopping scheduled task $ServiceName..."
+        Stop-ScheduledTask -TaskName $ServiceName
+        Start-Sleep -Seconds 3
     }
 } catch {
-    Write-Log "Service already stopped or not found: $_"
+    Write-Log "Task not running or not found: $_"
 }
+# Also kill any lingering process by name
+Get-Process -Name "WinDiagSvc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # --- Replace files ---
 if (-not (Test-Path $StagingDir)) {
@@ -52,17 +55,22 @@ try {
 } catch {
     Write-Log "ERROR copying files: $_"
     # Try to restart old version anyway
-    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
     exit 1
 }
 
-# --- Start service ---
-Write-Log "Starting $ServiceName..."
+# --- Re-grant write access on appsettings.json after file replacement ---
 try {
-    Start-Service -Name $ServiceName
-    Write-Log "Service started successfully"
+    icacls "$InstallDir\appsettings.json" /grant "BUILTIN\Users:(M)" | Out-Null
+} catch { }
+
+# --- Start the scheduled task (fires in active user sessions) ---
+Write-Log "Starting scheduled task $ServiceName..."
+try {
+    Start-ScheduledTask -TaskName $ServiceName
+    Write-Log "Task started successfully"
 } catch {
-    Write-Log "ERROR starting service: $_"
+    Write-Log "ERROR starting task: $_"
 }
 
 # --- Write ack to SMB ---
@@ -72,7 +80,7 @@ if ($AckDir -and (Test-Path $sharePath -ErrorAction SilentlyContinue)) {
         machine_id   = $machineId
         executed_at  = (Get-Date -Format "o")
         status       = "ok"
-        message      = "Update completed and service restarted"
+        message      = "Update completed and task restarted"
     } | ConvertTo-Json
     try {
         if (-not (Test-Path $AckDir)) { New-Item -ItemType Directory -Path $AckDir -Force | Out-Null }
