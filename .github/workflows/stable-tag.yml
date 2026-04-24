@@ -1,0 +1,15 @@
+name: Stable Tag
+
+on:
+  push:
+    tags:
+      - 'agent/v*-stable'
+      - 'cloud/v*-stable'
+      - 'server/v*-stable'
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verified stable release
+        run: echo "Stable tag ${{ github.ref_name }} — verified by CJM."
