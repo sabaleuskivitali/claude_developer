@@ -13,6 +13,8 @@ from pathlib import Path
 
 _CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 _CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
+_CF_DNS_TOKEN  = os.environ.get("CF_DNS_TOKEN", "")
+_CF_ZONE_ID    = os.environ.get("CF_ZONE_ID", "")
 _CF_BASE       = "https://api.cloudflare.com/client/v4"
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -183,28 +185,62 @@ def _cf_request(method: str, path: str, body: dict = None):
         return json.loads(r.read())
 
 
+def _cf_dns_request(method: str, path: str, body: dict = None):
+    token = _CF_DNS_TOKEN or _CF_API_TOKEN
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(
+        f"{_CF_BASE}/{path}",
+        data=data,
+        method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
 def _cf_create_server_tunnel(server_name: str) -> dict:
     tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
-    name = f"seamlean-{re.sub(r'[^a-z0-9-]', '-', server_name.lower())[:40]}-{uuid.uuid4().hex[:6]}"
+    short_name = re.sub(r'[^a-z0-9-]', '-', server_name.lower())[:40]
+    suffix = uuid.uuid4().hex[:6]
+    name = f"seamlean-{short_name}-{suffix}"
     result = _cf_request("POST", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel", {
         "name": name,
         "tunnel_secret": tunnel_secret,
         "config_src": "cloudflare",
     })
     tunnel_id = result["result"]["id"]
-    # Set ingress: route all traffic to server API on port 443
+    # Public hostname: srv-{suffix}.seamlean.com
+    hostname = f"srv-{suffix}.seamlean.com"
+    # Configure tunnel ingress with public hostname → server API port 49200
     _cf_request("PUT", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations", {
         "config": {
             "ingress": [
-                {"service": "https://localhost:443", "originRequest": {"noTLSVerify": True}}
+                {
+                    "hostname": hostname,
+                    "service": "https://localhost:49200",
+                    "originRequest": {"noTLSVerify": True},
+                },
+                {"service": "http_status:404"},
             ]
         }
     })
+    # Create DNS CNAME record (proxied) so hostname resolves
+    if _CF_ZONE_ID:
+        try:
+            _cf_dns_request("POST", f"zones/{_CF_ZONE_ID}/dns_records", {
+                "type": "CNAME",
+                "name": hostname,
+                "content": f"{tunnel_id}.cfargotunnel.com",
+                "proxied": True,
+                "ttl": 1,
+            })
+        except Exception as e:
+            print(f"WARN: DNS CNAME creation failed: {e}", flush=True)
     # Get cloudflared token for this tunnel
     token_result = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/token")
     tunnel_token = token_result["result"]
-    wan_url = f"https://{tunnel_id}.cfargotunnel.com"
-    return {"tunnel_id": tunnel_id, "tunnel_token": tunnel_token, "wan_url": wan_url}
+    tunnel_url = f"https://{hostname}"
+    return {"tunnel_id": tunnel_id, "tunnel_token": tunnel_token, "wan_url": tunnel_url}
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
