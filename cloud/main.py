@@ -449,33 +449,39 @@ async def register_server(request: Request):
 
         api_key = existing[0] if existing else uuid.uuid4().hex + uuid.uuid4().hex
 
-        # Create CF tunnel (skip if already exists for idempotent reinstall)
-        cf_tunnel_id  = existing[1] if existing else None
-        tunnel_token  = None
-        wan_url       = None
-        if not cf_tunnel_id:
-            try:
-                cf = _cf_create_server_tunnel(server_name)
-                cf_tunnel_id = cf["tunnel_id"]
-                tunnel_token = cf["tunnel_token"]
-                wan_url      = cf["wan_url"]
-            except Exception as cf_err:
-                conn.close()
-                return {"ok": False, "error": f"CF tunnel creation failed: {cf_err}"}
-        else:
-            # Re-fetch token for existing tunnel (reinstall case)
-            try:
-                token_result = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
-                tunnel_token = token_result["result"]
-                wan_url      = f"https://{cf_tunnel_id}.cfargotunnel.com"
-            except Exception:
-                pass
+        cf_tunnel_id = existing[1] if existing else None
+        tunnel_token = None
+        wan_url      = None
 
+        # CF tunnel: optional — only created when CF credentials are configured.
+        # On migration (reinstall with same token): lan_url updated, tunnel token re-issued
+        # for the same tunnel so cloudflared starts on the new machine automatically.
+        if _CF_ACCOUNT_ID and _CF_API_TOKEN:
+            if not cf_tunnel_id:
+                # First install: create a new dedicated tunnel for this server
+                try:
+                    cf = _cf_create_server_tunnel(server_name)
+                    cf_tunnel_id = cf["tunnel_id"]
+                    tunnel_token = cf["tunnel_token"]
+                    wan_url      = cf["wan_url"]
+                except Exception:
+                    pass  # non-fatal: server registers in LAN-only mode
+            else:
+                # Reinstall / migration: re-issue token for existing tunnel.
+                # New machine gets same tunnel_id → same wan_url, cloudflared reconnects.
+                try:
+                    result      = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
+                    tunnel_token = result["result"]
+                    wan_url      = f"https://{cf_tunnel_id}.cfargotunnel.com"
+                except Exception:
+                    pass  # non-fatal: WAN access temporarily unavailable
+
+        # Always update lan_url so cabinet health checks use current LAN address after migration
         conn.execute(
             """INSERT OR REPLACE INTO servers
                (user_id, server_url, lan_url, wan_url, cf_tunnel_id, api_key, server_name)
                VALUES (?,?,?,?,?,?,?)""",
-            (user_id, server_url, lan_url or None, wan_url, cf_tunnel_id, api_key, server_name)
+            (user_id, lan_url or server_url, lan_url or None, wan_url, cf_tunnel_id, api_key, server_name)
         )
         conn.commit()
         conn.close()
