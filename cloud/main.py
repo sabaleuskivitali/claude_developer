@@ -601,9 +601,15 @@ def cabinet(request: Request):
         api_key      = user_server["api_key"]
         hb_age, hb_s = _heartbeat_age(user_server.get("heartbeat_at"))
 
-        # Health check only via CF tunnel URL (never via raw public IP)
-        if tunnel_url:
+        # Health check only when heartbeat is stale (>10 min) or never received.
+        # If heartbeat is fresh — trust it, avoid unnecessary outbound requests.
+        _STALE = 600
+        hb_stale = hb_age is None or hb_age >= _STALE
+        if hb_stale and tunnel_url:
             health      = _api(tunnel_url, api_key, "/health")
+            agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+        elif tunnel_url:
+            health      = None
             agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
         else:
             health      = None
@@ -611,6 +617,7 @@ def cabinet(request: Request):
 
         extra = ""
         if health and health.get("status") in ("ok", "degraded"):
+            # Stale heartbeat but health check succeeded
             status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
             if health.get("version"):
                 extra += f'<tr><td style="color:#6b7280">Версия</td><td>{health["version"]}</td></tr>'
@@ -620,10 +627,14 @@ def cabinet(request: Request):
                 extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}{db_size}</td></tr>'
             if health.get("disk_free_gb") is not None:
                 extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
-        elif hb_age is not None and hb_age < 600:
-            status_badge = f'<span class="badge warning">🟡 Работает (нет WAN){hb_s}</span>'
+        elif hb_age is not None and hb_age < _STALE:
+            # Fresh heartbeat — server is alive
+            status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
+        elif hb_age is not None and health is None and hb_stale:
+            # Stale heartbeat + health check failed
+            status_badge = f'<span class="badge offline">🔴 Недоступен{hb_s}</span>'
         elif hb_age is not None:
-            status_badge = f'<span class="badge offline">🔴 Нет связи{hb_s}</span>'
+            status_badge = f'<span class="badge offline">🔴 Недоступен{hb_s}</span>'
         else:
             status_badge = '<span class="badge warning">⚠️ Ожидание сервера</span>'
 

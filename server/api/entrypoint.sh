@@ -137,7 +137,7 @@ while True:
         urllib.request.urlopen(req, context=ctx, timeout=5)
     except Exception as e:
         print(f'heartbeat error: {e}', file=sys.stderr)
-    time.sleep(300)
+    time.sleep(300)  # ping immediately on start, then every 5 min
 PYEOF
     echo "Cloud heartbeat: pinging ${CLOUD_URL} every 5m"
 fi
