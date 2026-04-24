@@ -601,15 +601,12 @@ def cabinet(request: Request):
         api_key      = user_server["api_key"]
         hb_age, hb_s = _heartbeat_age(user_server.get("heartbeat_at"))
 
-        # Health check only when heartbeat is stale (>10 min) or never received.
-        # If heartbeat is fresh — trust it, avoid unnecessary outbound requests.
+        # Always fetch health + agents via CF tunnel (never via raw public IP).
+        # Heartbeat is used only as fallback status when tunnel is unreachable.
         _STALE = 600
         hb_stale = hb_age is None or hb_age >= _STALE
-        if hb_stale and tunnel_url:
+        if tunnel_url:
             health      = _api(tunnel_url, api_key, "/health")
-            agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
-        elif tunnel_url:
-            health      = None
             agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
         else:
             health      = None
