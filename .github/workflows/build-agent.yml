@@ -202,12 +202,12 @@ jobs:
           --ext-id            ${{ env.EXTENSION_ID }} `
           --server-thumbprint "${{ secrets.SERVER_THUMBPRINT }}" `
           --profile-url       "${{ secrets.CLOUD_PROFILE_URL }}" `
-          --out               build/Install-WinDiagSvc.ps1
+          --out               build/Install-Seamlean.Agent.ps1
 
     - name: Verify installer is pure ASCII
       shell: python
       run: |
-        data = open('build/Install-WinDiagSvc.ps1', 'rb').read()
+        data = open('build/Install-Seamlean.Agent.ps1', 'rb').read()
         bad = [i for i in range(len(data)) if data[i] > 127]
         if bad:
             raise SystemExit(f'Non-ASCII bytes in installer at positions: {bad[:5]} — breaks PowerShell on Windows-1252')
@@ -252,7 +252,7 @@ jobs:
       with:
         name: Seamlean-Agent-${{ env.VERSION }}
         path: |
-          build/Install-WinDiagSvc.ps1
+          build/Install-Seamlean.Agent.ps1
           build/Seamlean.Agent.exe
           build/extension.crx
           build/extension/
