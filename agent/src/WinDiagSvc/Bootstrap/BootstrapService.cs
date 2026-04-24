@@ -50,8 +50,10 @@ public sealed class BootstrapService
         // Apply endpoints and trust from profile
         settings.ServerUrl = profile.Endpoints.Primary;
 
-        if (profile.Trust.Pins.Length > 0)
-            settings.ServerThumbprint = profile.Trust.Pins[0].Replace("sha256/", "");
+        // Always overwrite thumbprint from profile (empty pins = standard TLS, e.g. Cloudflare tunnel)
+        settings.ServerThumbprint = profile.Trust.Pins.Length > 0
+            ? profile.Trust.Pins[0].Replace("sha256/", "")
+            : string.Empty;
 
         _log.LogInformation(
             "Bootstrap: applied profile {Id} (method={Method}, server={Url})",
@@ -93,6 +95,8 @@ public sealed class BootstrapService
                             writer.WriteString("ServerUrl", settings.ServerUrl);
                         else if (p.Name == "ApiKey" && string.IsNullOrEmpty(p.Value.GetString()))
                             writer.WriteString("ApiKey", settings.ApiKey);
+                        else if (p.Name == "ServerThumbprint")
+                            writer.WriteString("ServerThumbprint", settings.ServerThumbprint);
                         else
                             p.WriteTo(writer);
                     }
