@@ -3,11 +3,16 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import ssl
 import urllib.request
 import uuid
 from pathlib import Path
+
+_CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
+_CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
+_CF_BASE       = "https://api.cloudflare.com/client/v4"
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -57,11 +62,12 @@ def init_db():
         conn.commit()
     except Exception:
         pass
-    try:
-        conn.execute("ALTER TABLE servers ADD COLUMN tunnel_url TEXT")
-        conn.commit()
-    except Exception:
-        pass
+    for col in ["tunnel_url TEXT", "wan_url TEXT", "lan_url TEXT", "cf_tunnel_id TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE servers ADD COLUMN {col}")
+            conn.commit()
+        except Exception:
+            pass
     conn.close()
 
 
@@ -118,12 +124,56 @@ def _get_install_token(user_id: str) -> str:
 def _get_user_server(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-        "SELECT server_url, tunnel_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
+        "SELECT server_url, wan_url, lan_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
     ).fetchone()
     conn.close()
     if not row:
         return None
-    return {"server_url": row[0], "tunnel_url": row[1] or row[0], "api_key": row[2], "server_name": row[3]}
+    wan = row[1] or row[0]
+    return {"server_url": row[0], "wan_url": wan, "lan_url": row[2], "api_key": row[3], "server_name": row[4]}
+
+
+# ── Cloudflare Tunnel API ─────────────────────────────────────────────────────
+
+def _cf_request(method: str, path: str, body: dict = None):
+    if not _CF_ACCOUNT_ID or not _CF_API_TOKEN:
+        raise RuntimeError("CF_ACCOUNT_ID / CF_API_TOKEN not configured")
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(
+        f"{_CF_BASE}/{path}",
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {_CF_API_TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def _cf_create_server_tunnel(server_name: str) -> dict:
+    tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
+    name = f"seamlean-{re.sub(r'[^a-z0-9-]', '-', server_name.lower())[:40]}-{uuid.uuid4().hex[:6]}"
+    result = _cf_request("POST", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel", {
+        "name": name,
+        "tunnel_secret": tunnel_secret,
+        "config_src": "cloudflare",
+    })
+    tunnel_id = result["result"]["id"]
+    # Set ingress: route all traffic to server API on port 443
+    _cf_request("PUT", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations", {
+        "config": {
+            "ingress": [
+                {"service": "https://localhost:443", "originRequest": {"noTLSVerify": True}}
+            ]
+        }
+    })
+    # Get cloudflared token for this tunnel
+    token_result = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/token")
+    tunnel_token = token_result["result"]
+    wan_url = f"https://{tunnel_id}.cfargotunnel.com"
+    return {"tunnel_id": tunnel_id, "tunnel_token": tunnel_token, "wan_url": wan_url}
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -304,7 +354,7 @@ def login_post(email: str = Form(...), password: str = Form(...)):
     conn.commit()
     conn.close()
     resp = RedirectResponse("/cabinet", status_code=302)
-    resp.set_cookie("session", token, httponly=True, samesite="lax")
+    resp.set_cookie("session", token, httponly=True, samesite="lax", secure=True)
     return resp
 
 
@@ -349,7 +399,7 @@ def register_post(email: str = Form(...), password: str = Form(...)):
     conn.commit()
     conn.close()
     resp = RedirectResponse("/cabinet", status_code=302)
-    resp.set_cookie("session", token, httponly=True, samesite="lax")
+    resp.set_cookie("session", token, httponly=True, samesite="lax", secure=True)
     return resp
 
 
@@ -371,35 +421,65 @@ def logout(request: Request):
 @app.post("/api/register-server")
 async def register_server(request: Request):
     try:
-        data = await request.json()
+        data          = await request.json()
         install_token = data.get("token", "")
         server_name   = data.get("server_name", "Мой сервер")
-        tunnel_url    = data.get("tunnel_url", "")
-        # server_url (display) determined from connecting IP — Cloudflare passes real IP
-        client_ip = (
+        lan_url       = data.get("lan_url", "")
+
+        client_ip  = (
             request.headers.get("CF-Connecting-IP") or
             request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or
             request.client.host
         )
         server_url = f"https://{client_ip}:443"
+
         if not install_token:
             return {"ok": False, "error": "Missing token"}
+
         conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
+        row  = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
         if not row:
             conn.close()
             return {"ok": False, "error": "Invalid token"}
-        # Cloud generates api_key — single source of truth
-        # Reuse existing key if server already registered (idempotent reinstall)
-        existing = conn.execute("SELECT api_key FROM servers WHERE user_id=?", (row[0],)).fetchone()
+
+        user_id  = row[0]
+        existing = conn.execute(
+            "SELECT api_key, cf_tunnel_id FROM servers WHERE user_id=?", (user_id,)
+        ).fetchone()
+
         api_key = existing[0] if existing else uuid.uuid4().hex + uuid.uuid4().hex
+
+        # Create CF tunnel (skip if already exists for idempotent reinstall)
+        cf_tunnel_id  = existing[1] if existing else None
+        tunnel_token  = None
+        wan_url       = None
+        if not cf_tunnel_id:
+            try:
+                cf = _cf_create_server_tunnel(server_name)
+                cf_tunnel_id = cf["tunnel_id"]
+                tunnel_token = cf["tunnel_token"]
+                wan_url      = cf["wan_url"]
+            except Exception as cf_err:
+                conn.close()
+                return {"ok": False, "error": f"CF tunnel creation failed: {cf_err}"}
+        else:
+            # Re-fetch token for existing tunnel (reinstall case)
+            try:
+                token_result = _cf_request("GET", f"accounts/{_CF_ACCOUNT_ID}/cfd_tunnel/{cf_tunnel_id}/token")
+                tunnel_token = token_result["result"]
+                wan_url      = f"https://{cf_tunnel_id}.cfargotunnel.com"
+            except Exception:
+                pass
+
         conn.execute(
-            "INSERT OR REPLACE INTO servers(user_id,server_url,tunnel_url,api_key,server_name) VALUES(?,?,?,?,?)",
-            (row[0], server_url, tunnel_url or None, api_key, server_name)
+            """INSERT OR REPLACE INTO servers
+               (user_id, server_url, lan_url, wan_url, cf_tunnel_id, api_key, server_name)
+               VALUES (?,?,?,?,?,?,?)""",
+            (user_id, server_url, lan_url or None, wan_url, cf_tunnel_id, api_key, server_name)
         )
         conn.commit()
         conn.close()
-        return {"ok": True, "api_key": api_key}
+        return {"ok": True, "api_key": api_key, "tunnel_token": tunnel_token}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -461,7 +541,7 @@ def cabinet(request: Request):
 
     # ── Server panel ──────────────────────────────────────────────────────────
     if user_server:
-        health = _api(user_server["tunnel_url"], user_server["api_key"], "/health")
+        health = _api(user_server["wan_url"], user_server["api_key"], "/health")
         if health and health.get("status") in ("ok", "degraded"):
             status_badge = '<span class="badge online">🟢 Онлайн</span>'
             extra = ""
@@ -486,8 +566,8 @@ def cabinet(request: Request):
       {extra}
     </table>
   </div>"""
-        agents_data   = (_api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
-        bootstrap_raw = _api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
+        agents_data   = (_api(user_server["wan_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
+        bootstrap_raw = _api(user_server["wan_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
         # Show install command whenever server is registered, regardless of health/reachability
         bootstrap_url = user_server["server_url"]
     else:
@@ -658,23 +738,39 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  # server_url (display) is determined by cloud from CF-Connecting-IP header
-  # tunnel_url is the CF Tunnel public URL used by cloud for API calls
-  # api_key is generated by cloud and returned here
-  TUNNEL_URL=$(grep -r "CF_TUNNEL_URL\|cloudflared.*url" /opt/seamlean/server/.env 2>/dev/null | cut -d= -f2 || echo "")
-  [ -z "$TUNNEL_URL" ] && TUNNEL_URL="https://api.seamlean.com"
-  echo "Registering server with Seamlean cloud..."
+  # Detect LAN IP for local agent discovery
+  LAN_IP=$(hostname -I | awk '{print $1}')
+  LAN_URL="https://${LAN_IP}:49200"
+  echo "Registering server with Seamlean cloud (LAN: ${LAN_URL})..."
   RESP=$(curl -sf -X POST "https://seamlean.com/api/register-server" \
     -H "Content-Type: application/json" \
-    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_name\":\"${SERVER_NAME}\",\"tunnel_url\":\"${TUNNEL_URL}\"}" \
+    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_name\":\"${SERVER_NAME}\",\"lan_url\":\"${LAN_URL}\"}" \
     2>/dev/null || echo '{"ok":false}')
 
   if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
     API_KEY=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['api_key'])")
+    TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tunnel_token',''))")
     sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
-    echo "✅ Server registered! API key configured. Open https://seamlean.com/cabinet to see status."
+    echo "✅ Server registered! API key configured."
+
+    # ── Install cloudflared for WAN access ──────────────────────────────────
+    if [ -n "$TUNNEL_TOKEN" ]; then
+      echo "Installing cloudflared for WAN tunnel..."
+      if ! command -v cloudflared &>/dev/null; then
+        curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+          | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+          > /etc/apt/sources.list.d/cloudflared.list
+        apt-get update -q && apt-get install -y -q cloudflared
+      fi
+      cloudflared service install "$TUNNEL_TOKEN"
+      systemctl enable --now cloudflared
+      echo "✅ Cloudflare tunnel active — WAN access enabled."
+    fi
+
     # Restart API with correct key
     docker compose up -d api
+    echo "Open https://seamlean.com/cabinet to see status."
   else
     echo "⚠️  Registration failed: $RESP"
   fi
@@ -682,7 +778,7 @@ fi
 
 echo ""
 echo "=== ✅ Seamlean server installed ==="
-echo "API port: 49200 (LAN) / api.seamlean.com (WAN via Cloudflare Tunnel)"
+echo "API port: 49200 (LAN)"
 echo "Logs: docker compose -f $INSTALL_DIR/server/docker-compose.yml logs -f"
 """
 
@@ -742,7 +838,7 @@ def bootstrap_proxy(token: str):
     user_server = _get_user_server(row[0])
     if not user_server:
         return JSONResponse(status_code=503, content={"error": "Server not registered"})
-    data = _api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/bootstrap/active")
+    data = _api(user_server["wan_url"], user_server["api_key"], "/api/v1/bootstrap/active")
     if not data:
         return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
     # Re-sign with cloud CA key so agent trusts one stable root of trust.
