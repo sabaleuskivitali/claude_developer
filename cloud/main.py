@@ -586,7 +586,15 @@ _ST_ICON = {"online": "🟢", "warning": "🟡", "offline": "🔴"}
 
 def _parse_layer_stats(layer_stats):
     try:
-        return json.loads(layer_stats) if isinstance(layer_stats, str) else (layer_stats or {})
+        stats = json.loads(layer_stats) if isinstance(layer_stats, str) else (layer_stats or {})
+        # Normalise PascalCase keys from C# agent to snake_case
+        return {
+            layer: {
+                "events_5min": (ls.get("Events5Min") or ls.get("events_5min") or 0),
+                "errors_5min": (ls.get("Errors5Min") or ls.get("errors_5min") or 0),
+            }
+            for layer, ls in stats.items() if ls
+        }
     except Exception:
         return {}
 

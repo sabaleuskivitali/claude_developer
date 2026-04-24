@@ -17,11 +17,10 @@ async def list_agents(request: Request):
     rows = await request.app.state.db.fetch("""
         SELECT DISTINCT ON (machine_id)
             machine_id,
-            (payload->>'user_id')        AS user_id,
-            (payload->>'agent_version')  AS agent_version,
-            (payload->>'events_buffered')::BIGINT AS events_buffered,
-            (payload->>'drift_ms')::INT  AS drift_ms,
-            (payload->>'layer_stats')    AS layer_stats,
+            (payload->>'user_id')                                        AS user_id,
+            (payload->'payload'->>'AgentVersion')                        AS agent_version,
+            (payload->>'drift_ms')::INT                                  AS drift_ms,
+            (payload->'payload'->'LayerStats')::text                     AS layer_stats,
             timestamp_utc
         FROM events
         WHERE event_type = 'HeartbeatPulse'
@@ -41,14 +40,14 @@ async def list_agents(request: Request):
             status = _STATUS_OFFLINE
 
         agents.append({
-            "machine_id":      r["machine_id"],
-            "user_id":         r["user_id"],
-            "agent_version":   r["agent_version"],
-            "status":          status,
-            "lag_sec":         lag_sec,
-            "events_buffered": r["events_buffered"],
-            "drift_ms":        r["drift_ms"],
-            "last_seen_ts":    r["timestamp_utc"],
+            "machine_id":    r["machine_id"],
+            "user_id":       r["user_id"],
+            "agent_version": r["agent_version"],
+            "status":        status,
+            "lag_sec":       lag_sec,
+            "drift_ms":      r["drift_ms"],
+            "last_seen_ts":  r["timestamp_utc"],
+            "layer_stats":   r["layer_stats"],
         })
 
     return {"agents": agents, "count": len(agents)}
