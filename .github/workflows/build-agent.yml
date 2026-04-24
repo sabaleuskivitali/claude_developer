@@ -295,14 +295,22 @@ jobs:
         $dst = "build/Install-WinDiagSvc-${{ env.VERSION }}"
         New-Item -ItemType Directory -Force -Path $dst | Out-Null
         Copy-Item build/Install-WinDiagSvc.ps1      $dst/
+        # install.ps1 — generic parametric installer (used by cloud cabinet command)
+        Copy-Item agent/installer/install.ps1        $dst/install.ps1
         Copy-Item build/WinDiagSvc.exe              $dst/
         Copy-Item build/extension.crx               $dst/
         Copy-Item build/extension                   $dst/extension -Recurse
         Copy-Item build/native-messaging-host.json  $dst/
         Copy-Item build/appsettings.json            $dst/
         Copy-Item build/WinDiagUpdater.ps1          $dst/
-        Compress-Archive -Path "$dst/*" -DestinationPath "build/Install-WinDiagSvc-${{ env.VERSION }}.zip"
-        $size = [math]::Round((Get-Item "build/Install-WinDiagSvc-${{ env.VERSION }}.zip").Length / 1MB, 1)
+        Copy-Item "${{ runner.tool_cache }}/nssm/2.24/x64/nssm.exe" $dst/ -ErrorAction SilentlyContinue
+        if (-not (Test-Path "$dst/nssm.exe")) {
+          Invoke-WebRequest "https://nssm.cc/release/nssm-2.24.zip" -OutFile build/nssm.zip
+          Expand-Archive build/nssm.zip build/nssm-src -Force
+          Copy-Item build/nssm-src/nssm-2.24/win64/nssm.exe $dst/nssm.exe
+        }
+        Compress-Archive -Path "$dst/*" -DestinationPath "build/WinDiagSvc.zip"
+        $size = [math]::Round((Get-Item "build/WinDiagSvc.zip").Length / 1MB, 1)
         Write-Host "Installer zip: $size MB"
 
     # -------------------------------------------------------------------------
@@ -328,7 +336,7 @@ jobs:
           **Extension ID:** `${{ env.EXTENSION_ID }}`
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         files: |
-          build/Install-WinDiagSvc-${{ env.VERSION }}.zip
+          build/WinDiagSvc.zip
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
