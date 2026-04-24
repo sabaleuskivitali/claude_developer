@@ -60,9 +60,9 @@ public static class Installer
         Directory.CreateDirectory(Path.Combine(dataDir, "logs"));
         Console.WriteLine("    OK: directories created");
 
-        // Grant BUILTIN\Users Modify access to data dir so the agent (runs as Users) can write.
-        // The installer runs as admin; the scheduled task runs as BUILTIN\Users (LeastPrivilege).
-        RunSilent("icacls", $"\"{dataDir}\" /grant \"BUILTIN\\Users:(OI)(CI)M\" /T /C /Q");
+        // Grant BUILTIN\Users (SID S-1-5-32-545) Modify access so the agent can write.
+        // Use SID to avoid locale-specific group names (e.g. "Uzytkownicy" on Polish Windows).
+        RunSilent("icacls", $"\"{dataDir}\" /grant:r \"*S-1-5-32-545:(OI)(CI)M\" /T /C /Q");
         Console.WriteLine("    OK: data dir write permissions granted to Users");
 
         // 2. Copy exe to install dir
