@@ -150,7 +150,7 @@ static void EnsureIdentity(AgentSettings settings)
         .Replace(@"""UserId"": """"",    $@"""UserId"": ""{userId}""");
 
     if (patched != json)
-        File.WriteAllText(configPath, patched);
+        try { File.WriteAllText(configPath, patched); } catch { }
 
     settings.MachineId = machineId;
     settings.UserId    = userId;

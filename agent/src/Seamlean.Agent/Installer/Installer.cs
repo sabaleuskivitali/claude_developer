@@ -83,6 +83,9 @@ public static class Installer
             }
         }
 
+        // 3b. Pre-fill MachineId / UserId while running as admin (avoids write failure at runtime)
+        PrefillIdentity(settingsPath);
+
         // 4. Bootstrap profile via install code (before writing registry URL)
         if (!string.IsNullOrEmpty(installCode))
         {
@@ -304,6 +307,29 @@ public static class Installer
     {
         try { Registry.LocalMachine.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false); }
         catch { }
+    }
+
+    private static void PrefillIdentity(string settingsPath)
+    {
+        if (!File.Exists(settingsPath)) return;
+        try
+        {
+            var json     = File.ReadAllText(settingsPath);
+            var machineId = ComputeId(Environment.MachineName);
+            var userId    = ComputeId(Environment.UserName + Environment.MachineName);
+            var patched   = json
+                .Replace(@"""MachineId"": """"", $@"""MachineId"": ""{machineId}""")
+                .Replace(@"""UserId"": """"",    $@"""UserId"": ""{userId}""");
+            if (patched != json)
+                File.WriteAllText(settingsPath, patched);
+        }
+        catch { }
+    }
+
+    private static string ComputeId(string input)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes).ToLower();
     }
 
     private static void RunSilent(string exe, string args)
