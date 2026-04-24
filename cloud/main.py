@@ -1059,25 +1059,31 @@ if [ -n "$INSTALL_TOKEN" ]; then
     fi
     echo "✅ Server registered! API key configured."
 
+    # Restart API with correct key/URL (always, before cloudflared)
+    docker compose up -d api
+    echo "✅ API restarted with correct credentials."
+
     # ── Install cloudflared for WAN access ──────────────────────────────────
     if [ -n "$TUNNEL_TOKEN" ]; then
       echo "Installing cloudflared for WAN tunnel..."
-      if ! command -v cloudflared &>/dev/null; then
-        curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-          | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
-        echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
-          > /etc/apt/sources.list.d/cloudflared.list
-        apt-get update -q && apt-get install -y -q cloudflared
-      fi
-      cloudflared service uninstall 2>/dev/null || true
-      systemctl stop cloudflared 2>/dev/null || true
-      cloudflared service install "$TUNNEL_TOKEN"
-      systemctl enable --now cloudflared
-      echo "✅ Cloudflare tunnel active — WAN access enabled."
+      (
+        set +e
+        if ! command -v cloudflared &>/dev/null; then
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+            | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+            > /etc/apt/sources.list.d/cloudflared.list
+          apt-get update -q && apt-get install -y -q cloudflared
+        fi
+        cloudflared service uninstall 2>/dev/null
+        systemctl stop cloudflared 2>/dev/null
+        cloudflared service install "$TUNNEL_TOKEN"
+        systemctl enable cloudflared
+        systemctl restart cloudflared
+        echo "✅ Cloudflare tunnel active — WAN access enabled."
+      ) || echo "⚠️  Cloudflare tunnel setup failed — WAN access unavailable, LAN still works."
     fi
 
-    # Restart API with correct key
-    docker compose up -d api
     echo "Open https://seamlean.com/cabinet to see status."
   else
     echo "⚠️  Registration failed: $RESP"
