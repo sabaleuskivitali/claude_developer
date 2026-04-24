@@ -584,41 +584,70 @@ _LAYER_LABELS = {"window": "Окна", "visual": "Скрины", "system": "Си
 _ST_ICON = {"online": "🟢", "warning": "🟡", "offline": "🔴"}
 
 
-def _layers_html(layer_stats) -> str:
+def _parse_layer_stats(layer_stats):
     try:
-        stats = json.loads(layer_stats) if isinstance(layer_stats, str) else (layer_stats or {})
+        return json.loads(layer_stats) if isinstance(layer_stats, str) else (layer_stats or {})
     except Exception:
-        return "—"
-    parts = []
+        return {}
+
+
+def _collection_badge(stats: dict) -> str:
+    if not stats:
+        return '<span style="color:#9ca3af;font-size:.82rem">нет данных</span>'
+    has_errors = any((ls.get("errors_5min") or 0) > 0 for ls in stats.values() if ls)
+    active = sum(1 for ls in stats.values() if ls and (ls.get("events_5min") or 0) > 0)
+    if has_errors:
+        return '<span style="background:#fee2e2;color:#991b1b;padding:2px 9px;border-radius:12px;font-size:.78rem;font-weight:600">⚠ Ошибки</span>'
+    if active == 0:
+        return '<span style="color:#9ca3af;font-size:.82rem">нет событий</span>'
+    return '<span style="background:#d1fae5;color:#065f46;padding:2px 9px;border-radius:12px;font-size:.78rem;font-weight:600">✅ Работает</span>'
+
+
+def _layers_detail_row(row_id: str, stats: dict) -> str:
+    cells = ""
     for key, label in _LAYER_LABELS.items():
-        ls = stats.get(key)
+        ls     = stats.get(key)
+        events = (ls.get("events_5min") or 0) if ls else None
+        errors = (ls.get("errors_5min") or 0) if ls else None
         if ls is None:
-            continue
-        err = (ls.get("errors_5min") or 0) > 0
-        bg  = "#fee2e2" if err else "#d1fae5"
-        col = "#991b1b" if err else "#065f46"
-        parts.append(f'<span style="background:{bg};color:{col};padding:1px 5px;border-radius:4px;font-size:.74rem;font-weight:600;margin-right:2px">{label}</span>')
-    return "".join(parts) or "—"
+            icon, col, detail = "—", "#9ca3af", "нет данных"
+        elif errors:
+            icon, col, detail = "⚠", "#991b1b", f"{events} / <b style='color:#991b1b'>{errors} ошибок</b>"
+        elif events:
+            icon, col, detail = "✅", "#065f46", f"{events} соб."
+        else:
+            icon, col, detail = "○", "#9ca3af", "0 соб."
+        cells += (f'<td style="padding:4px 12px 4px 0;white-space:nowrap">'
+                  f'<span style="color:{col};font-size:.8rem">{icon} {label}</span>'
+                  f'<span style="color:#9ca3af;font-size:.75rem;margin-left:4px">{detail}</span></td>')
+    return (f'<tr id="layer-{row_id}" style="display:none;background:#f8fafc">'
+            f'<td colspan="6" style="padding:6px 16px 10px 32px">'
+            f'<table style="border:0"><tr>{cells}</tr></table></td></tr>')
 
 
 def _agent_rows(agents) -> str:
     if not agents:
-        return '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px">Агентов нет. Установите первого с помощью команды выше.</td></tr>'
+        return '<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px">Агентов нет. Установите первого с помощью команды выше.</td></tr>'
     rows = ""
-    for a in agents:
+    for i, a in enumerate(agents):
         lag   = a.get("lag_sec", 0)
         drift = a.get("drift_ms")
         st    = a.get("status", "offline")
+        ver   = a.get("agent_version") or "—"
         last  = f"{lag}с" if lag < 60 else (f"{lag//60}м" if lag < 3600 else f"{lag//3600}ч")
         drift_s = (f'<span style="color:{"#dc2626" if abs(drift)>1000 else "#374151"}">{drift:+d}мс</span>'
                    if drift is not None else "—")
-        rows += f"""<tr>
+        stats = _parse_layer_stats(a.get("layer_stats"))
+        rid   = f"a{i}"
+        rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
           <td style="font-family:monospace;font-size:.78rem">{a.get('machine_id','')[:12]}…</td>
           <td><span class="badge {st}">{_ST_ICON.get(st,'❓')} {st}</span></td>
-          <td style="color:#6b7280">{last} назад</td>
-          <td>{_layers_html(a.get('layer_stats'))}</td>
+          <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
+          <td style="color:#6b7280;font-size:.82rem">{ver}</td>
+          <td>{_collection_badge(stats)}</td>
           <td>{drift_s}</td>
         </tr>"""
+        rows += _layers_detail_row(rid, stats)
     return rows
 
 
@@ -752,12 +781,19 @@ def cabinet(request: Request):
     <div class="sec-title">Устройства</div>
     <table>
       <thead><tr>
-        <th>Machine ID</th><th>Статус</th><th>Last seen</th><th>Слои</th><th>Drift</th>
+        <th>Machine ID</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th><th>Drift</th>
       </tr></thead>
       <tbody>{_agent_rows(agents_data)}</tbody>
     </table>
+    <p style="color:#9ca3af;font-size:.78rem;margin-top:8px">↕ Нажмите на строку чтобы увидеть статус слоёв</p>
   </div>
-</div>"""
+</div>
+<script>
+function toggleLayer(id) {{
+  var row = document.getElementById('layer-' + id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}}
+</script>"""
 
     return _page("Кабинет — Seamlean", nav, body, wide=True)
 
