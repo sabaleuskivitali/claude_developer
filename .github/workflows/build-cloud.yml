@@ -13,7 +13,6 @@ on:
 
 jobs:
   build:
-    if: "!endsWith(github.ref, '-stable')"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

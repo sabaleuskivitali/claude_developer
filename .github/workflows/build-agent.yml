@@ -14,7 +14,6 @@ on:
 
 jobs:
   build:
-    if: "!endsWith(github.ref, '-stable')"
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -74,9 +73,10 @@ jobs:
       run: |
         $csproj = "agent/src/WinDiagSvc/WinDiagSvc.csproj"
         $xml = [xml](Get-Content $csproj)
+        $numericVer = "${{ env.VERSION }}" -replace '-.*$', ''
         $xml.Project.PropertyGroup.Version            = "${{ env.VERSION }}"
-        $xml.Project.PropertyGroup.AssemblyVersion    = "${{ env.VERSION }}.0"
-        $xml.Project.PropertyGroup.FileVersion        = "${{ env.VERSION }}.0"
+        $xml.Project.PropertyGroup.AssemblyVersion    = "$numericVer.0"
+        $xml.Project.PropertyGroup.FileVersion        = "$numericVer.0"
         $xml.Save((Resolve-Path $csproj))
         Write-Host "Version set to ${{ env.VERSION }}"
 
