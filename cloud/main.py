@@ -1020,7 +1020,7 @@ def _get_agent_url() -> str | None:
         for rel in releases:
             if rel.get("tag_name", "").startswith("agent/"):
                 for asset in rel.get("assets", []):
-                    if asset["name"] == "WinDiagSvc.zip":
+                    if asset["name"] == "Seamlean.Agent.exe":
                         url = asset["browser_download_url"]
                         _agent_url_cache["url"] = url
                         _agent_url_cache["ts"] = now
@@ -1072,14 +1072,14 @@ async def github_release_webhook(request: Request):
         return {"ok": True, "skipped": True, "reason": "not an agent release"}
 
     for asset in release.get("assets", []):
-        if asset["name"] == "WinDiagSvc.zip":
+        if asset["name"] == "Seamlean.Agent.exe":
             url = asset["browser_download_url"]
             _agent_url_cache["url"] = url
             _agent_url_cache["ts"] = time.time()
             _config_set("latest_agent_url", url)
             return {"ok": True, "tag": tag, "url": url}
 
-    return JSONResponse(status_code=422, content={"error": "WinDiagSvc.zip not found in release assets"})
+    return JSONResponse(status_code=422, content={"error": "Seamlean.Agent.exe not found in release assets"})
 
 
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────
