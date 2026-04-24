@@ -1248,7 +1248,7 @@ async def generate_install_code(request: Request):
     )
     conn.commit()
     conn.close()
-    return {"code": code, "expires_at": expires_at, "url": f"https://seamlean.com/i/{code}"}
+    return RedirectResponse("/cabinet", status_code=303)
 
 
 # ── Bootstrap-via-link landing page ──────────────────────────────────────────
