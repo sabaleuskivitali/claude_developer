@@ -677,8 +677,8 @@ public sealed class ServerDiscovery : IDisposable
 
         if (string.IsNullOrEmpty(_settings.ServerThumbprint))
         {
-            _logger.LogWarning("TLS: ServerThumbprint not configured — connection refused");
-            return false;
+            // No pin configured — trust standard TLS validation (Cloudflare tunnel / public CA)
+            return ___ == System.Net.Security.SslPolicyErrors.None;
         }
 
         var actual   = Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()))
