@@ -650,6 +650,7 @@ def cabinet(request: Request):
             health      = None
             agents_data = []
 
+        _na = '<span style="color:#9ca3af">недоступно — нет туннеля</span>'
         extra = ""
         if health and health.get("status") in ("ok", "degraded"):
             # Stale heartbeat but health check succeeded
@@ -662,6 +663,10 @@ def cabinet(request: Request):
                 extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}{db_size}</td></tr>'
             if health.get("disk_free_gb") is not None:
                 extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
+        elif hb_age is not None and hb_age < _STALE and not tunnel_url:
+            status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
+            extra = (f'<tr><td style="color:#6b7280">Версия</td><td>{_na}</td></tr>'
+                     f'<tr><td style="color:#6b7280">Диск свободно</td><td>{_na}</td></tr>')
         elif hb_age is not None and hb_age < _STALE:
             # Fresh heartbeat — server is alive
             status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
