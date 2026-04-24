@@ -39,7 +39,7 @@ async def _ensure_bootstrap(pool):
         signed = generate_profile(ctx)
     except Exception:
         return
-    profile_id = await bs_store.create(pool, signed)
+    profile_id = await bs_store.create(pool, signed, ctx)
     await bs_store.approve(pool, profile_id)
     await bs_store.publish(pool, profile_id)
 

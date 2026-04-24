@@ -47,9 +47,22 @@ jobs:
         pip install ruff --quiet
         ruff check cloud/ --ignore E501 || true
 
-    - name: Build Docker image
+    - name: Build Docker image (smoke test)
       working-directory: cloud
       run: docker build -t cloud-bootstrap:${{ env.VERSION }} .
+
+    - name: Deploy to cloud server
+      env:
+        CLOUD_SSH_KEY: ${{ secrets.CLOUD_SSH_KEY }}
+      run: |
+        echo "$CLOUD_SSH_KEY" > /tmp/deploy_key
+        chmod 600 /tmp/deploy_key
+        ssh -i /tmp/deploy_key \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=15 \
+          agent@${{ secrets.CLOUD_HOST }} \
+          "cd /home/agent/repo && git pull && docker compose -f cloud/docker-compose.yml up -d --build"
+        rm -f /tmp/deploy_key
 
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/cloud/v')
@@ -58,14 +71,11 @@ jobs:
         tag_name: cloud/v${{ env.VERSION }}
         name: Cloud v${{ env.VERSION }}
         body: |
-          ## Cloud Bootstrap Server v${{ env.VERSION }}
+          ## Cloud v${{ env.VERSION }}
 
-          ### Деплой на 178.104.1.6
-          ```bash
-          git pull
-          cd cloud
-          docker compose up -d --build
-          ```
+          ### Деплой
+          Автоматически через GitHub Actions при push в `cloud/**`.
+
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         generate_release_notes: false
       env:

@@ -553,7 +553,7 @@ async def register_server(request: Request):
         )
         conn.commit()
         conn.close()
-        return {"ok": True, "api_key": api_key, "tunnel_token": tunnel_token}
+        return {"ok": True, "api_key": api_key, "tunnel_token": tunnel_token, "tunnel_url": cf_url}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -870,8 +870,12 @@ if [ -n "$INSTALL_TOKEN" ]; then
   if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
     API_KEY=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['api_key'])")
     TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_token'); print(v if v else '')")
+    TUNNEL_URL=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_url'); print(v if v else '')")
     sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
     sed -i "s|^CLOUD_URL=.*|CLOUD_URL=https://seamlean.com|" .env
+    if [ -n "$TUNNEL_URL" ]; then
+      sed -i "s|^SERVER_URL=.*|SERVER_URL=${TUNNEL_URL}|" .env
+    fi
     echo "✅ Server registered! API key configured."
 
     # ── Install cloudflared for WAN access ──────────────────────────────────
