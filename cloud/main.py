@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -7,6 +8,9 @@ import ssl
 import urllib.request
 import uuid
 from pathlib import Path
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -37,6 +41,7 @@ def init_db():
     conn.execute("""CREATE TABLE IF NOT EXISTS servers (
         user_id TEXT PRIMARY KEY,
         server_url TEXT NOT NULL,
+        tunnel_url TEXT,
         api_key TEXT NOT NULL,
         server_name TEXT DEFAULT 'Мой сервер',
         registered_at TEXT DEFAULT (datetime('now'))
@@ -52,10 +57,31 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE servers ADD COLUMN tunnel_url TEXT")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 
 init_db()
+
+
+# ── Cloud CA (root of trust for bootstrap profiles) ───────────────────────────
+
+_CA_KEY_PATH = Path("/app/data/cloud_ca_key.pem")
+
+def _load_ca_key() -> ec.EllipticCurvePrivateKey:
+    if not _CA_KEY_PATH.exists():
+        raise RuntimeError(f"Cloud CA private key not found at {_CA_KEY_PATH}")
+    with open(_CA_KEY_PATH, "rb") as f:
+        return serialization.load_pem_private_key(f.read(), password=None)
+
+def _sign_data(data_bytes: bytes) -> str:
+    key = _load_ca_key()
+    sig = key.sign(data_bytes, ec.ECDSA(hashes.SHA256()))
+    return base64.b64encode(sig).decode()
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -92,10 +118,12 @@ def _get_install_token(user_id: str) -> str:
 def _get_user_server(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-        "SELECT server_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
+        "SELECT server_url, tunnel_url, api_key, server_name FROM servers WHERE user_id=?", (user_id,)
     ).fetchone()
     conn.close()
-    return {"server_url": row[0], "api_key": row[1], "server_name": row[2]} if row else None
+    if not row:
+        return None
+    return {"server_url": row[0], "tunnel_url": row[1] or row[0], "api_key": row[2], "server_name": row[3]}
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -346,7 +374,8 @@ async def register_server(request: Request):
         data = await request.json()
         install_token = data.get("token", "")
         server_name   = data.get("server_name", "Мой сервер")
-        # server_url determined from connecting IP — Cloudflare passes real IP
+        tunnel_url    = data.get("tunnel_url", "")
+        # server_url (display) determined from connecting IP — Cloudflare passes real IP
         client_ip = (
             request.headers.get("CF-Connecting-IP") or
             request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or
@@ -365,8 +394,8 @@ async def register_server(request: Request):
         existing = conn.execute("SELECT api_key FROM servers WHERE user_id=?", (row[0],)).fetchone()
         api_key = existing[0] if existing else uuid.uuid4().hex + uuid.uuid4().hex
         conn.execute(
-            "INSERT OR REPLACE INTO servers(user_id,server_url,api_key,server_name) VALUES(?,?,?,?)",
-            (row[0], server_url, api_key, server_name)
+            "INSERT OR REPLACE INTO servers(user_id,server_url,tunnel_url,api_key,server_name) VALUES(?,?,?,?,?)",
+            (row[0], server_url, tunnel_url or None, api_key, server_name)
         )
         conn.commit()
         conn.close()
@@ -432,7 +461,7 @@ def cabinet(request: Request):
 
     # ── Server panel ──────────────────────────────────────────────────────────
     if user_server:
-        health = _api(user_server["server_url"], user_server["api_key"], "/health")
+        health = _api(user_server["tunnel_url"], user_server["api_key"], "/health")
         if health and health.get("status") in ("ok", "degraded"):
             status_badge = '<span class="badge online">🟢 Онлайн</span>'
             extra = ""
@@ -457,11 +486,10 @@ def cabinet(request: Request):
       {extra}
     </table>
   </div>"""
-        agents_data   = (_api(user_server["server_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
-        bootstrap_raw = _api(user_server["server_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
-        # If the server has an active profile, the bootstrap URL is just the public endpoint
-        bootstrap_url = (user_server["server_url"].rstrip("/") + "/api/v1/bootstrap/active"
-                         if bootstrap_raw.get("signed_data") else "")
+        agents_data   = (_api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
+        bootstrap_raw = _api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
+        # Show install command whenever server is registered, regardless of health/reachability
+        bootstrap_url = user_server["server_url"]
     else:
         install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
         server_panel = f"""
@@ -630,12 +658,15 @@ done
 
 # ── Register with cloud ───────────────────────────────────────────────────────
 if [ -n "$INSTALL_TOKEN" ]; then
-  # server_url is determined by cloud from CF-Connecting-IP header
+  # server_url (display) is determined by cloud from CF-Connecting-IP header
+  # tunnel_url is the CF Tunnel public URL used by cloud for API calls
   # api_key is generated by cloud and returned here
+  TUNNEL_URL=$(grep -r "CF_TUNNEL_URL\|cloudflared.*url" /opt/seamlean/server/.env 2>/dev/null | cut -d= -f2 || echo "")
+  [ -z "$TUNNEL_URL" ] && TUNNEL_URL="https://api.seamlean.com"
   echo "Registering server with Seamlean cloud..."
   RESP=$(curl -sf -X POST "https://seamlean.com/api/register-server" \
     -H "Content-Type: application/json" \
-    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_name\":\"${SERVER_NAME}\"}" \
+    -d "{\"token\":\"${INSTALL_TOKEN}\",\"server_name\":\"${SERVER_NAME}\",\"tunnel_url\":\"${TUNNEL_URL}\"}" \
     2>/dev/null || echo '{"ok":false}')
 
   if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
@@ -662,24 +693,39 @@ def install_sh():
 
 
 # ── Agent package download ────────────────────────────────────────────────────
-# Rule: no binary files on cloud — only a redirect URL stored in DB.
-# Updated by `make deploy` after each GitHub Release.
+_GITHUB_REPO = "sabaleuskivitali/claude_developer"
+_agent_url_cache: dict = {"url": None, "ts": 0}
 
 def _get_agent_url():
+    import time
+    now = time.time()
+    if _agent_url_cache["url"] and now - _agent_url_cache["ts"] < 300:
+        return _agent_url_cache["url"]
     try:
-        conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT value FROM config WHERE key = 'agent_download_url'").fetchone()
-        conn.close()
-        return row[0] if row else None
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "Seamlean-Cloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            releases = json.loads(r.read())
+        for rel in releases:
+            if rel.get("tag_name", "").startswith("agent/"):
+                for asset in rel.get("assets", []):
+                    if asset["name"] == "WinDiagSvc.zip":
+                        url = asset["browser_download_url"]
+                        _agent_url_cache["url"] = url
+                        _agent_url_cache["ts"] = now
+                        return url
     except Exception:
-        return None
+        pass
+    return None
 
 @app.get("/agent")
 def agent_download():
     url = _get_agent_url()
     if url:
         return RedirectResponse(url, status_code=302)
-    return JSONResponse(status_code=503, content={"error": "Agent URL not configured"})
+    return JSONResponse(status_code=503, content={"error": "Agent release not found on GitHub"})
 
 
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────
@@ -696,10 +742,20 @@ def bootstrap_proxy(token: str):
     user_server = _get_user_server(row[0])
     if not user_server:
         return JSONResponse(status_code=503, content={"error": "Server not registered"})
-    data = _api(user_server["server_url"], user_server["api_key"], "/api/v1/bootstrap/active")
+    data = _api(user_server["tunnel_url"], user_server["api_key"], "/api/v1/bootstrap/active")
     if not data:
         return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
-    return data
+    # Re-sign with cloud CA key so agent trusts one stable root of trust.
+    # The server's CA key may change (e.g. volume wipe), but cloud CA never does.
+    signed_data = data.get("signed_data")
+    if not signed_data:
+        return JSONResponse(status_code=502, content={"error": "Server returned invalid profile"})
+    try:
+        raw_bytes = base64.b64decode(signed_data)
+        cloud_signature = _sign_data(raw_bytes)
+        return {"signed_data": signed_data, "signature": cloud_signature}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Re-sign failed: {e}"})
 
 
 # ── Robots / Health ───────────────────────────────────────────────────────────

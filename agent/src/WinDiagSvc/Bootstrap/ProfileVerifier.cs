@@ -4,13 +4,13 @@ namespace WinDiagSvc.Bootstrap;
 
 public static class ProfileVerifier
 {
-    // ECDSA-P256 public key of the bootstrap CA.
-    // Replace with output of: python manage.py bootstrap export-pubkey
-    // This is the ONLY root of trust for bootstrap profiles — never fetch this key at runtime.
+    // ECDSA-P256 public key of the Seamlean cloud CA.
+    // Profiles are re-signed by api.seamlean.com — server CA key is irrelevant.
+    // To rotate: generate new cloud CA key, update this constant, release new agent version.
     private const string CaPublicKeyPem = """
         -----BEGIN PUBLIC KEY-----
-        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3cBkSYtXy/E9U6riCq5e7IhSws+7
-        KkYqLfWaZAcAP08XNcrBDsYaNMBtYs6ZNSIBWMiaGEIaAKAKsYWMMJTZBw==
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENzfF/esu6mgwZo5hQiUyzFi9ZLt0
+        L4wl24KEBakkgz9xHiNr2HYoQ3JMCRAdlDqxoqz+O5RMPVGey2fPpvICCQ==
         -----END PUBLIC KEY-----
         """;
 
@@ -18,12 +18,6 @@ public static class ProfileVerifier
     {
         if (string.IsNullOrEmpty(signed.SignedData) || string.IsNullOrEmpty(signed.Signature))
             return false;
-
-        if (CaPublicKeyPem.Contains("REPLACE_WITH_SERVER_CA_PUBLIC_KEY_PEM"))
-            throw new InvalidOperationException(
-                "Bootstrap CA public key not configured. " +
-                "Run 'python manage.py bootstrap export-pubkey' on the server, " +
-                "replace the placeholder in ProfileVerifier.cs, and rebuild.");
 
         try
         {
