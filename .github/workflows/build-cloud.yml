@@ -51,6 +51,20 @@ jobs:
       working-directory: cloud
       run: docker build -t cloud-bootstrap:${{ env.VERSION }} .
 
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/cloud/v')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: cloud/v${{ env.VERSION }}
+        name: Cloud v${{ env.VERSION }}
+        body: |
+          ## Cloud v${{ env.VERSION }}
+
+          **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Deploy to cloud server
       env:
         CLOUD_SSH_KEY: ${{ secrets.CLOUD_SSH_KEY }}
@@ -63,20 +77,3 @@ jobs:
           agent@${{ secrets.CLOUD_HOST }} \
           "cd /home/agent/repo && git pull && docker compose -f cloud/docker-compose.yml up -d --build"
         rm -f /tmp/deploy_key
-
-    - name: Create GitHub Release
-      if: startsWith(github.ref, 'refs/tags/cloud/v')
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: cloud/v${{ env.VERSION }}
-        name: Cloud v${{ env.VERSION }}
-        body: |
-          ## Cloud v${{ env.VERSION }}
-
-          ### Деплой
-          Автоматически через GitHub Actions при push в `cloud/**`.
-
-          **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
-        generate_release_notes: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
