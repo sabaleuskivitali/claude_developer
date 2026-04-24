@@ -438,17 +438,18 @@ public sealed class ServerDiscovery : IDisposable
     // Spreads first-discovery across 120s to avoid all agents hitting server at once.
     // Derived deterministically from MachineId so the same machine always gets the same delay.
 
-    public static TimeSpan GetStartupJitter(string machineId)
+    public static TimeSpan GetStartupJitter(string machineId, int maxSeconds = 120)
     {
+        if (maxSeconds <= 0) return TimeSpan.Zero;
         if (string.IsNullOrEmpty(machineId) || machineId.Length < 8)
-            return TimeSpan.FromSeconds(10);
+            return TimeSpan.FromSeconds(Math.Min(10, maxSeconds));
         try
         {
             var bytes = Convert.FromHexString(machineId[..8]);
             var seed  = BitConverter.ToUInt32(bytes, 0);
-            return TimeSpan.FromSeconds(seed % 120);
+            return TimeSpan.FromSeconds(seed % (uint)maxSeconds);
         }
-        catch { return TimeSpan.FromSeconds(10); }
+        catch { return TimeSpan.FromSeconds(Math.Min(10, maxSeconds)); }
     }
 
     // ─── UDP beacon ──────────────────────────────────────────────────────────

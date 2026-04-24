@@ -63,8 +63,11 @@ Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
 if ($SharePath) { $cfg.AgentSettings.SharePath = $SharePath }
+# Fresh install: skip startup jitter so the agent syncs immediately after bootstrap
+$cfg.AgentSettings.MaxStartupJitterSeconds = 0
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
 if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath - will use domain Integrated Auth" }
+Write-OK "ApiKey, ServerUrl, ExtensionId, ServerThumbprint, CloudProfileUrl written"
 
 # ---------------------------------------------------------------------------
 # 3b. Bootstrap profile — written to registry for CascadeResolver (priority 1)

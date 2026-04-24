@@ -31,6 +31,7 @@ public sealed class AgentSettings
     public int      NtpIntervalMinutes { get; set; } = 2;
 
     public int HeartbeatIntervalSeconds    { get; set; } = 60;
+    public int MaxStartupJitterSeconds     { get; set; } = 120;
     public int PerformanceIntervalMinutes  { get; set; } = 5;
     public int CommandPollIntervalSeconds  { get; set; } = 60;
     public int UpdateCheckIntervalMinutes  { get; set; } = 10;

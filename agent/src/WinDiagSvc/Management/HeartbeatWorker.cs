@@ -66,6 +66,8 @@ public sealed class HeartbeatWorker : BackgroundService
             );
         }
 
+        var version = typeof(HeartbeatWorker).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
         _store.Insert(new ActivityEvent
         {
             SessionId    = _store.SessionId,
@@ -77,6 +79,8 @@ public sealed class HeartbeatWorker : BackgroundService
             DriftRatePpm = _ntp.DriftRatePpm,
             Layer        = "agent",
             EventType    = nameof(EventType.HeartbeatPulse),
+            AgentVersion = version,
+            Hostname     = Environment.MachineName,
             LayerStats   = layerStats,
         });
     }

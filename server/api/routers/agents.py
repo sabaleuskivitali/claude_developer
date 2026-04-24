@@ -17,10 +17,11 @@ async def list_agents(request: Request):
     rows = await request.app.state.db.fetch("""
         SELECT DISTINCT ON (machine_id)
             machine_id,
-            (payload->>'user_id')                                        AS user_id,
-            (payload->'payload'->>'AgentVersion')                        AS agent_version,
-            (payload->>'drift_ms')::INT                                  AS drift_ms,
-            (payload->'payload'->'LayerStats')::text                     AS layer_stats,
+            (payload->>'user_id')                                                AS user_id,
+            (payload->>'payload')::jsonb->>'AgentVersion'                        AS agent_version,
+            (payload->>'payload')::jsonb->>'Hostname'                            AS hostname,
+            (payload->>'drift_ms')::INT                                          AS drift_ms,
+            ((payload->>'payload')::jsonb->'LayerStats')::text                   AS layer_stats,
             timestamp_utc
         FROM events
         WHERE event_type = 'HeartbeatPulse'
@@ -42,6 +43,7 @@ async def list_agents(request: Request):
         agents.append({
             "machine_id":    r["machine_id"],
             "user_id":       r["user_id"],
+            "hostname":      r["hostname"],
             "agent_version": r["agent_version"],
             "status":        status,
             "lag_sec":       lag_sec,

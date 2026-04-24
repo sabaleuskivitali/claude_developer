@@ -114,6 +114,7 @@ public sealed class PerformanceMonitor : BackgroundService
             DriftRatePpm = _ntp.DriftRatePpm,
             Layer        = "agent",
             EventType    = nameof(EventType.PerformanceSnapshot),
+            Payload      = JsonSerializer.Serialize(payload),
         });
     }
 

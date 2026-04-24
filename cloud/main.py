@@ -647,8 +647,9 @@ def _agent_rows(agents) -> str:
                    if drift is not None else "—")
         stats = _parse_layer_stats(a.get("layer_stats"))
         rid   = f"a{i}"
+        display_name = a.get('hostname') or f"{a.get('machine_id','')[:12]}…"
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
-          <td style="font-family:monospace;font-size:.78rem">{a.get('machine_id','')[:12]}…</td>
+          <td style="font-family:monospace;font-size:.78rem">{display_name}</td>
           <td><span class="badge {st}">{_ST_ICON.get(st,'❓')} {st}</span></td>
           <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
           <td style="color:#6b7280;font-size:.82rem">{ver}</td>
