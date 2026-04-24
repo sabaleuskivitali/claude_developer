@@ -129,8 +129,7 @@ def _get_user_server(user_id: str):
     conn.close()
     if not row:
         return None
-    wan = row[1] or row[0]
-    return {"server_url": row[0], "wan_url": wan, "lan_url": row[2], "api_key": row[3], "server_name": row[4]}
+    return {"server_url": row[0], "wan_url": row[1], "lan_url": row[2], "api_key": row[3], "server_name": row[4]}
 
 
 # ── Cloudflare Tunnel API ─────────────────────────────────────────────────────
@@ -547,7 +546,16 @@ def cabinet(request: Request):
 
     # ── Server panel ──────────────────────────────────────────────────────────
     if user_server:
-        health = _api(user_server["wan_url"], user_server["api_key"], "/health")
+        wan_url = user_server.get("wan_url")
+        api_key = user_server["api_key"]
+
+        if wan_url:
+            health        = _api(wan_url, api_key, "/health")
+            agents_data   = (_api(wan_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+        else:
+            health        = None
+            agents_data   = []
+
         if health and health.get("status") in ("ok", "degraded"):
             status_badge = '<span class="badge online">🟢 Онлайн</span>'
             extra = ""
@@ -559,6 +567,9 @@ def cabinet(request: Request):
                 extra += f'<tr><td style="color:#6b7280">База данных</td><td>{"✅" if db_ok else "⚠️"} {health["db"]}{db_size}</td></tr>'
             if health.get("disk_free_gb") is not None:
                 extra += f'<tr><td style="color:#6b7280">Диск свободно</td><td>{health["disk_free_gb"]} GB</td></tr>'
+        elif wan_url is None:
+            status_badge = '<span class="badge warning">⚠️ Недоступен или работает только в LAN режиме</span>'
+            extra = ""
         else:
             status_badge = '<span class="badge offline">🔴 Недоступен</span>'
             extra = ""
@@ -567,13 +578,11 @@ def cabinet(request: Request):
   <div class="card">
     <div class="sec-title">{user_server['server_name']}</div>
     <table>
-      <tr><td style="color:#6b7280;width:160px">Адрес</td><td><code>{user_server['server_url']}</code></td></tr>
+      <tr><td style="color:#6b7280;width:160px">LAN адрес</td><td><code>{user_server['lan_url'] or user_server['server_url']}</code></td></tr>
       <tr><td style="color:#6b7280">Статус</td><td>{status_badge}</td></tr>
       {extra}
     </table>
   </div>"""
-        agents_data   = (_api(user_server["wan_url"], user_server["api_key"], "/api/v1/agents") or {}).get("agents", [])
-        bootstrap_raw = _api(user_server["wan_url"], user_server["api_key"], "/api/v1/bootstrap/active") or {}
         # Show install command whenever server is registered, regardless of health/reachability
         bootstrap_url = user_server["server_url"]
     else:
@@ -845,7 +854,10 @@ def bootstrap_proxy(token: str):
     user_server = _get_user_server(row[0])
     if not user_server:
         return JSONResponse(status_code=503, content={"error": "Server not registered"})
-    data = _api(user_server["wan_url"], user_server["api_key"], "/api/v1/bootstrap/active")
+    wan_url = user_server.get("wan_url")
+    if not wan_url:
+        return JSONResponse(status_code=503, content={"error": "Server has no WAN URL (LAN-only mode)"})
+    data = _api(wan_url, user_server["api_key"], "/api/v1/bootstrap/active")
     if not data:
         return JSONResponse(status_code=503, content={"error": "Bootstrap profile unavailable"})
     # Re-sign with cloud CA key so agent trusts one stable root of trust.
