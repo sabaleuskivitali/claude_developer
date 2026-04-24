@@ -1,11 +1,9 @@
 import time
-import json
 import uuid
-from fastapi import APIRouter, Depends, Request
-from auth import require_agent_key
+from fastapi import APIRouter, Request
 from models import HeartbeatIn, EventIn
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_agent_key)])
+router = APIRouter(prefix="/api/v1")
 
 
 @router.post("/heartbeat")

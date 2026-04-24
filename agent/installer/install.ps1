@@ -2,12 +2,9 @@
 # install.ps1 — Task Mining Agent installer
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install.ps1 `
-#       -ServerHost 10.8.20.150 `
-#       -ApiKey <key> `
 #       [-SharePath \\10.8.20.150\Share] `
 #       [-ShareUser DOMAIN\user] [-SharePass password]
 #
-# -ApiKey       API key for authenticating to diag_api  (required)
 # -SharePath    SMB share path (e.g. \\server\Share); leave empty for domain Integrated Auth auto-discovery
 # -ShareUser    SMB credentials; leave empty if domain (Integrated Auth)
 # -SharePass    SMB password
@@ -16,7 +13,6 @@
 # or DNS A record (windiag.{domain}). IT adds one DNS record — no IPs in installer.
 
 param(
-    [string]$ApiKey              = "",
     [string]$SharePath           = "",
     [string]$ShareUser           = "",
     [string]$SharePass           = "",
@@ -66,10 +62,8 @@ Write-OK "Files copied"
 Write-Step "Configuring appsettings.json"
 $cfgPath = "$InstallDir\appsettings.json"
 $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-if ($ApiKey)    { $cfg.AgentSettings.ApiKey    = $ApiKey }
 if ($SharePath) { $cfg.AgentSettings.SharePath = $SharePath }
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-if ($ApiKey)    { Write-OK "ApiKey    = $($ApiKey.Substring(0,8))..." }
 if ($SharePath) { Write-OK "SharePath = $SharePath" } else { Write-OK "SharePath - will use domain Integrated Auth" }
 
 # ---------------------------------------------------------------------------
