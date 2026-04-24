@@ -71,7 +71,7 @@ jobs:
     - name: Patch csproj version
       shell: pwsh
       run: |
-        $csproj = "agent/src/WinDiagSvc/WinDiagSvc.csproj"
+        $csproj = "agent/src/Seamlean.Agent/Seamlean.Agent.csproj"
         $xml = [xml](Get-Content $csproj)
         $numericVer = "${{ env.VERSION }}" -replace '-.*$', ''
         $xml.Project.PropertyGroup.Version            = "${{ env.VERSION }}"
@@ -81,12 +81,12 @@ jobs:
         Write-Host "Version set to ${{ env.VERSION }}"
 
     # -------------------------------------------------------------------------
-    # 6. Restore NuGet packages (separate step for clearer error output)
+    # 6. Restore NuGet packages
     # -------------------------------------------------------------------------
     - name: Restore NuGet packages
       shell: pwsh
       run: |
-        $output = dotnet restore agent/src/WinDiagSvc/WinDiagSvc.csproj -r win-x64 2>&1
+        $output = dotnet restore agent/src/Seamlean.Agent/Seamlean.Agent.csproj -r win-x64 2>&1
         $output | Write-Host
         if ($LASTEXITCODE -ne 0) {
           @"
@@ -99,13 +99,13 @@ jobs:
         }
 
     # -------------------------------------------------------------------------
-    # 6b. Build WinDiagSvc.exe
+    # 6b. Build Seamlean.Agent.exe
     # -------------------------------------------------------------------------
     - name: Build agent (dotnet publish)
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path build | Out-Null
-        $output = dotnet publish agent/src/WinDiagSvc/WinDiagSvc.csproj `
+        $output = dotnet publish agent/src/Seamlean.Agent/Seamlean.Agent.csproj `
           -c Release `
           -r win-x64 `
           --self-contained true `
@@ -123,9 +123,9 @@ jobs:
         "@ | Add-Content $env:GITHUB_STEP_SUMMARY
           exit 1
         }
-        Copy-Item build/agent/WinDiagSvc.exe build/WinDiagSvc.exe
-        $size = (Get-Item build/WinDiagSvc.exe).Length / 1MB
-        Write-Host "WinDiagSvc.exe: $([math]::Round($size, 1)) MB"
+        Copy-Item build/agent/Seamlean.Agent.exe build/Seamlean.Agent.exe
+        $size = (Get-Item build/Seamlean.Agent.exe).Length / 1MB
+        Write-Host "Seamlean.Agent.exe: $([math]::Round($size, 1)) MB"
 
     # -------------------------------------------------------------------------
     # 7. Prepare extension private key from secret
@@ -151,7 +151,6 @@ jobs:
     - name: Pack Chrome extension (CRX3)
       shell: pwsh
       run: |
-        # Copy unpacked extension first so we can patch its manifest.json with the key
         Copy-Item agent/browser-extension build/extension -Recurse -Force
 
         python agent/tools/pack_extension.py `
@@ -161,13 +160,10 @@ jobs:
           --id-out          build/extension-id.txt `
           --patch-manifest  build/extension/manifest.json
 
-
-
         $id = Get-Content build/extension-id.txt
         echo "EXTENSION_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
         Write-Host "Extension ID: $id"
 
-        # Patch version in unpacked manifest to match agent version (triggers Chrome update)
         $mPath = "build/extension/manifest.json"
         $m = Get-Content $mPath -Raw | ConvertFrom-Json
         $m.version = "${{ env.VERSION }}"
@@ -183,8 +179,7 @@ jobs:
         $id  = "${{ env.EXTENSION_ID }}"
         $src = Get-Content agent/browser-extension/native-messaging-host.json -Raw | ConvertFrom-Json
         $src.allowed_origins = @("chrome-extension://$id/")
-        # path will be patched to real install path by install script
-        $src.path = "C:\Program Files\Windows Diagnostics\WinDiagSvc.exe"
+        $src.path = "C:\Program Files\Windows Diagnostics\Seamlean.Agent.exe"
         $src | ConvertTo-Json -Depth 5 | Set-Content build/native-messaging-host.json -Encoding UTF8
         Write-Host "Patched allowed_origins: chrome-extension://$id/"
 
@@ -194,12 +189,10 @@ jobs:
     - name: Copy build inputs
       shell: pwsh
       run: |
-        Copy-Item agent/src/WinDiagSvc/appsettings.json build/appsettings.json
+        Copy-Item agent/src/Seamlean.Agent/appsettings.json build/appsettings.json
 
     # -------------------------------------------------------------------------
-    # 11. Download NSSM 2.24
-    # -------------------------------------------------------------------------
-    # 12. Generate installer script (reads companion files from $PSScriptRoot)
+    # 11. Generate installer script
     # -------------------------------------------------------------------------
     - name: Generate installer script
       shell: pwsh
@@ -220,12 +213,28 @@ jobs:
             raise SystemExit(f'Non-ASCII bytes in installer at positions: {bad[:5]} — breaks PowerShell on Windows-1252')
         print(f'Installer encoding OK ({len(data)} bytes, pure ASCII)')
 
-    # Copy WinDiagUpdater.ps1 into build/ so it's included in the artifact
     - name: Copy WinDiagUpdater.ps1
       shell: pwsh
       run: Copy-Item agent/installer/WinDiagUpdater.ps1 build/WinDiagUpdater.ps1
 
-    # Note: unpacked extension already copied + manifest key patched in "Pack Chrome extension" step
+    # -------------------------------------------------------------------------
+    # 12. Build latest.json for OTA updates
+    # -------------------------------------------------------------------------
+    - name: Build latest.json
+      shell: pwsh
+      run: |
+        $hash = (Get-FileHash build/Seamlean.Agent.exe -Algorithm SHA256).Hash.ToLower()
+        $exeUrl = "https://github.com/${{ github.repository }}/releases/download/agent%2Fv${{ env.VERSION }}/Seamlean.Agent.exe"
+        $manifest = @{
+          version     = "${{ env.VERSION }}"
+          released_at = (Get-Date -Format "o")
+          exe_url     = $exeUrl
+          sha256      = $hash
+          min_version = "1.0.0"
+          changelog   = "Build ${{ github.run_number }} from ${{ github.sha }}"
+        } | ConvertTo-Json
+        $manifest | Set-Content build/latest.json -Encoding UTF8
+        Write-Host "exe_url: $exeUrl  SHA256: $hash"
 
     # -------------------------------------------------------------------------
     # 13. Wipe private key from runner
@@ -236,7 +245,7 @@ jobs:
       run: Remove-Item agent/tools/extension.pem -ErrorAction SilentlyContinue
 
     # -------------------------------------------------------------------------
-    # 14. Upload installer artifact (zip of all files — extract and run PS1)
+    # 14. Upload installer artifact
     # -------------------------------------------------------------------------
     - name: Upload installer artifact
       uses: actions/upload-artifact@v4
@@ -244,125 +253,65 @@ jobs:
         name: Install-WinDiagSvc-${{ env.VERSION }}
         path: |
           build/Install-WinDiagSvc.ps1
-          build/WinDiagSvc.exe
+          build/Seamlean.Agent.exe
           build/extension.crx
           build/extension/
           build/native-messaging-host.json
           build/appsettings.json
           build/WinDiagUpdater.ps1
-        retention-days: 30
-
-    # -------------------------------------------------------------------------
-    # 15. Also build update package (for OTA updates via SMB)
-    # -------------------------------------------------------------------------
-    - name: Build update package
-      shell: pwsh
-      run: |
-        $zip = "build/WinDiagSvc-${{ env.VERSION }}.zip"
-        Compress-Archive -Path build/WinDiagSvc.exe -DestinationPath $zip
-
-        # Compute SHA256
-        $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-
-        # latest.json for UpdateManager
-        $manifest = @{
-          version      = "${{ env.VERSION }}"
-          released_at  = (Get-Date -Format "o")
-          package_path = "updates/v${{ env.VERSION }}/WinDiagSvc.zip"
-          sha256       = $hash
-          min_version  = "1.0.0"
-          changelog    = "Build ${{ github.run_number }} from ${{ github.sha }}"
-        } | ConvertTo-Json
-        $manifest | Set-Content build/latest.json -Encoding UTF8
-
-        Write-Host "Update package: $zip  SHA256=$hash"
-
-    - name: Upload update package artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Update-WinDiagSvc-${{ env.VERSION }}
-        path: |
-          build/WinDiagSvc-${{ env.VERSION }}.zip
           build/latest.json
         retention-days: 30
 
     # -------------------------------------------------------------------------
-    # 16. Pack full installer zip for IT (all companion files in one archive)
-    # -------------------------------------------------------------------------
-    - name: Pack installer zip for IT
-      shell: pwsh
-      run: |
-        $dst = "build/installer"
-        New-Item -ItemType Directory -Force -Path $dst | Out-Null
-        # install.ps1 — used by cloud cabinet command (-BootstrapProfileUrl parameter)
-        Copy-Item build/Install-WinDiagSvc.ps1      $dst/install.ps1
-        Copy-Item build/WinDiagSvc.exe              $dst/
-        Copy-Item build/extension.crx               $dst/
-        Copy-Item build/extension                   $dst/extension -Recurse
-        Copy-Item build/native-messaging-host.json  $dst/
-        Copy-Item build/appsettings.json            $dst/
-        Copy-Item build/WinDiagUpdater.ps1          $dst/
-        Compress-Archive -Path "$dst/*" -DestinationPath "build/WinDiagSvc.zip"
-        $size = [math]::Round((Get-Item "build/WinDiagSvc.zip").Length / 1MB, 1)
-        Write-Host "Installer zip: $size MB"
-
-    # -------------------------------------------------------------------------
-    # 17. Create GitHub Release (only on tag push or manual with version)
+    # 15. Create GitHub Release (only on tag push or manual with version)
     # -------------------------------------------------------------------------
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/agent/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: agent/v${{ env.VERSION }}
-        name: WinDiagSvc v${{ env.VERSION }}
+        name: Seamlean Agent v${{ env.VERSION }}
         body: |
           ## Установка
 
-          1. Скачать `Install-WinDiagSvc-${{ env.VERSION }}.zip`
-          2. Распаковать в любую папку
-          3. Запустить PowerShell от администратора:
-          ```powershell
-          powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
+          1. Скачать `Seamlean.Agent.exe`
+          2. Запустить от имени администратора:
           ```
-          4. Установить расширение Chrome: `chrome://extensions` → Режим разработчика → Загрузить распакованное → папка `extension\`
+          Seamlean.Agent.exe --install
+          ```
 
           **Extension ID:** `${{ env.EXTENSION_ID }}`
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         files: |
-          build/WinDiagSvc.zip
+          build/Seamlean.Agent.exe
+          build/latest.json
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     # -------------------------------------------------------------------------
-    # 18. Job summary
+    # 16. Job summary
     # -------------------------------------------------------------------------
     - name: Write job summary
       if: always()
       shell: pwsh
       run: |
-        $zipPath = "build/Install-WinDiagSvc-${{ env.VERSION }}.zip"
-        $size = if (Test-Path $zipPath) {
-          "$([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB"
+        $size = if (Test-Path "build/Seamlean.Agent.exe") {
+          "$([math]::Round((Get-Item 'build/Seamlean.Agent.exe').Length / 1MB, 1)) MB"
         } else { "N/A" }
 
         @"
-        ## WinDiagSvc Build v${{ env.VERSION }}
+        ## Seamlean Agent Build v${{ env.VERSION }}
 
         | Параметр | Значение |
         |---|---|
         | Версия | ``${{ env.VERSION }}`` |
         | Extension ID | ``${{ env.EXTENSION_ID }}`` |
-        | Размер установщика | $size |
+        | Размер exe | $size |
         | Commit | ``${{ github.sha }}`` |
         | Run | #${{ github.run_number }} |
 
         ### Артефакты
-        - ``Install-WinDiagSvc-${{ env.VERSION }}`` — **единственный файл для установки**
-        - ``Update-WinDiagSvc-${{ env.VERSION }}`` — пакет OTA обновления
-
-        ### Установка на клиента
-        ```powershell
-        powershell -ExecutionPolicy Bypass -File Install-WinDiagSvc.ps1
-        ```
+        - ``Seamlean.Agent.exe`` — единый бинарь (агент + установщик)
+        - ``latest.json`` — манифест OTA обновления
         "@ | Add-Content $env:GITHUB_STEP_SUMMARY

@@ -38,20 +38,18 @@ try {
     Write-Log "Task not running or not found: $_"
 }
 # Also kill any lingering process by name
-Get-Process -Name "WinDiagSvc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name "Seamlean.Agent" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# --- Replace files ---
-if (-not (Test-Path $StagingDir)) {
-    Write-Log "ERROR: staging dir not found — aborting"
+# --- Replace exe ---
+$StagedExe = Join-Path $StagingDir "Seamlean.Agent.exe"
+if (-not (Test-Path $StagedExe)) {
+    Write-Log "ERROR: Seamlean.Agent.exe not found in staging — aborting"
     exit 1
 }
 
-Write-Log "Copying staged files to $InstallDir"
+Write-Log "Copying Seamlean.Agent.exe to $InstallDir"
 try {
-    Get-ChildItem -Path $StagingDir | ForEach-Object {
-        $dest = Join-Path $InstallDir $_.Name
-        Copy-Item -Path $_.FullName -Destination $dest -Force
-    }
+    Copy-Item -Path $StagedExe -Destination (Join-Path $InstallDir "Seamlean.Agent.exe") -Force
 } catch {
     Write-Log "ERROR copying files: $_"
     # Try to restart old version anyway
