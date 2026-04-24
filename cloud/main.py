@@ -846,6 +846,8 @@ if [ -n "$INSTALL_TOKEN" ]; then
           > /etc/apt/sources.list.d/cloudflared.list
         apt-get update -q && apt-get install -y -q cloudflared
       fi
+      cloudflared service uninstall 2>/dev/null || true
+      systemctl stop cloudflared 2>/dev/null || true
       cloudflared service install "$TUNNEL_TOKEN"
       systemctl enable --now cloudflared
       echo "✅ Cloudflare tunnel active — WAN access enabled."
