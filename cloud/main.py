@@ -1587,7 +1587,9 @@ async def stable_tag_webhook(request: Request):
     if not tag.startswith("agent/v"):
         return {"ok": True, "skipped": True, "reason": "not an agent tag"}
 
-    manifest = _fetch_latest_json_from_github(tag)
+    # CI creates the release under base tag (agent/v1.5.6), not the stable tag
+    release_tag = tag.removesuffix("-stable")
+    manifest = _fetch_latest_json_from_github(release_tag)
     if not manifest:
         return JSONResponse(status_code=422, content={"error": "latest.json not found in release"})
 
