@@ -977,10 +977,16 @@ def _agent_rows(agents) -> str:
         is_outdated = latest_ver and ver not in ("—", "") and ver != latest_ver
         ver_color   = "#dc2626" if is_outdated else "#6b7280"
         ver_tip     = latest_tip if is_outdated else (latest_tip or "")
+        if is_outdated and ver not in ("—", ""):
+            upd_tip = f"Обновить: v{ver} → v{latest_ver}"
+        elif latest_ver:
+            upd_tip = f"Обновить до v{latest_ver}"
+        else:
+            upd_tip = "Обновить сейчас"
         if srv_url and machine_id:
             upd_btn = (
                 f'<button onclick="forceUpdate(event,\'{srv_url}\',\'{srv_api_key}\',\'{machine_id}\')" '
-                f'title="{ver_tip or "Обновить сейчас"}" '
+                f'title="{upd_tip}" '
                 f'style="margin-left:6px;background:none;border:1px solid #d1d5db;border-radius:4px;'
                 f'padding:1px 5px;cursor:pointer;font-size:.74rem;color:#4f46e5">↑</button>'
             )
