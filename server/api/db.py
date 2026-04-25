@@ -231,7 +231,7 @@ def _event_to_record(e: EventIn) -> tuple:
         _s(e.case_id), _s(e.screenshot_path), e.screenshot_dhash, _s(e.capture_reason),
         _s(e.log_source), _s(e.log_level), _s(e.raw_message), _s(e.message_hash),
         _s(e.document_path), _s(e.document_name),
-        json.dumps(e.payload, default=str).replace("\x00", ""),
+        json.dumps(e.payload, default=str).replace("\x00", "").replace("\\u0000", ""),
     )
 
 
