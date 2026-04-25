@@ -94,6 +94,7 @@ public sealed class ProcessWatcher : BackgroundService
                 ProcessName  = processName,
             });
         }
+        catch (ManagementException) { /* short-lived or protected system process — exited before WMI read */ }
         catch (Exception ex) { WriteLayerError(ex); }
     }
 
