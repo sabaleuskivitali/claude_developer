@@ -55,6 +55,8 @@ public sealed class IdleDetector : BackgroundService
         if (isIdle && !_idleActive)
         {
             _idleActive = true;
+            _tracker.MarkIdle("window");
+            _tracker.MarkIdle("visual");
             WriteEvent(nameof(EventType.IdleStart));
         }
         else if (!isIdle && _idleActive)
@@ -62,14 +64,6 @@ public sealed class IdleDetector : BackgroundService
             _idleActive      = false;
             _deepIdleActive  = false;
             WriteEvent(nameof(EventType.IdleEnd));
-        }
-
-        // Keep watchdog from restarting the agent while the machine is idle.
-        // window and visual layers go silent when no user is present — that is expected.
-        if (isIdle)
-        {
-            _tracker.MarkIdle("window");
-            _tracker.MarkIdle("visual");
         }
 
         if (isDeepIdle && !_deepIdleActive)
