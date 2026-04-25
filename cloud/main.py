@@ -1217,13 +1217,15 @@ def cabinet(request: Request):
     <div class="sec-title" style="margin-bottom:0">Устройства</div>
     {agent_badge}
   </div>
-  <table>
+  <div style="overflow-x:auto">
+  <table style="width:max-content;min-width:100%">
     <thead><tr>
       <th style="white-space:nowrap">№</th><th>Машина / Пользователь</th><th>Адрес</th><th style="white-space:nowrap">Агент</th><th style="white-space:nowrap">Last seen</th><th style="white-space:nowrap">Версия</th><th style="white-space:nowrap">Сбор данных</th>
       <th style="white-space:nowrap" title="NTP-дрейф часов агента относительно эталонного времени. Норма: ±50 мс. При больших значениях временна́я корреляция событий между машинами может быть неточной.">Drift {_TIP_I}</th><th style="white-space:nowrap">Данные</th>
     </tr></thead>
     <tbody>{_agent_rows(agents_data)}</tbody>
   </table>
+  </div>
   <p style="color:#9ca3af;font-size:.78rem;margin-top:8px">↕ Нажмите на строку чтобы увидеть статус слоёв</p>
 </div>
 <script>
