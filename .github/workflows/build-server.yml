@@ -63,13 +63,23 @@ jobs:
         body: |
           ## Server v${{ env.VERSION }}
 
-          ### Деплой
-          ```bash
-          cd server
-          docker compose pull
-          docker compose up -d
-          ```
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Deploy to server
+      if: startsWith(github.ref, 'refs/tags/server/v')
+      env:
+        SERVER_SSH_KEY:  ${{ secrets.SERVER_SSH_KEY }}
+        SERVER_SUDO_PASS: ${{ secrets.SERVER_SUDO_PASS }}
+      run: |
+        echo "$SERVER_SSH_KEY" > /tmp/deploy_key
+        chmod 600 /tmp/deploy_key
+        ssh -i /tmp/deploy_key \
+          -p 5322 \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=15 \
+          nubes@195.222.86.67 \
+          "echo '${SERVER_SUDO_PASS}' | sudo -S bash -c 'cd /opt/seamlean/server && git pull && docker compose up -d --build --remove-orphans'"
+        rm -f /tmp/deploy_key

@@ -75,5 +75,5 @@ jobs:
           -o StrictHostKeyChecking=no \
           -o ConnectTimeout=15 \
           agent@${{ secrets.CLOUD_HOST }} \
-          "cd /home/agent/repo && git pull && docker compose -f cloud/docker-compose.yml up -d --build"
+          "cd /home/agent/repo && git pull && docker compose -f cloud/docker-compose.yml up -d --build --remove-orphans"
         rm -f /tmp/deploy_key
