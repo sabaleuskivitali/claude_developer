@@ -805,10 +805,10 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
     header += '</tr>'
 
     def _c(n, err=0):
-        """1h column: None→'—', 0→red, N→normal"""
+        """1h column: None→'—', 0→normal, N→normal"""
         if n is None: return '<span style="color:#9ca3af">—</span>'
         err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
-        return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>{err_s}'
+        return f'<span style="color:#374151">{n}</span>{err_s}'
 
     def _c24(n, err=0):
         """24h column: None or 0→'—' (no data), N→normal"""
