@@ -638,6 +638,8 @@ def _parse_layer_stats(layer_stats, layer_counts=None):
             "events_1h":    ct_data.get("events_1h"),    # None = server too old
             "events_24h":   ct_data.get("events_24h"),
             "events_total": ct_data.get("events_total"),
+            "errors_1h":    ct_data.get("errors_1h"),
+            "errors_24h":   ct_data.get("errors_24h"),
         }
     return result
 
@@ -653,7 +655,7 @@ def _collection_badge(stats: dict, is_offline: bool = False) -> str:
     if not known:
         known = stats
 
-    has_errors = any((v.get("errors_5min") or 0) > 0 for v in known.values())
+    has_errors = any((v.get("errors_24h") or 0) > 0 for v in known.values())
     has_1h_data = any(v.get("events_1h") is not None for v in known.values())
 
     _b = lambda bg, col, txt: (f'<span style="background:{bg};color:{col};padding:2px 9px;'
@@ -696,10 +698,11 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
     for key, label in _LAYER_LABELS.items():
         v      = stats.get(key)
         e5     = (v.get("events_5min") or 0) if v else 0
-        err5   = (v.get("errors_5min") or 0) if v else 0
         e1h    = v.get("events_1h")    if v else None
         e24h   = v.get("events_24h")   if v else None
         etotal = v.get("events_total") if v else None
+        err1h  = (v.get("errors_1h")  or 0) if v else 0
+        err24h = (v.get("errors_24h") or 0) if v else 0
 
         total_5min += e5
         if e1h    is not None: total_1h    += e1h
@@ -708,7 +711,7 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
 
         if v is None:
             icon, col = "—", "#9ca3af"
-        elif err5:
+        elif err24h:
             icon, col = "⚠", "#991b1b"
         elif e5 > 0:
             icon, col = "✅", "#065f46"
@@ -717,17 +720,18 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
         else:
             icon, col = "○", "#9ca3af"
 
-        err_badge = (f' <span style="color:#991b1b;font-size:.7rem">({err5} err)</span>' if err5 else "")
+        err_badge = (f' <span style="color:#991b1b;font-size:.7rem">({err24h} err)</span>' if err24h else "")
         row = (f'<tr>'
                f'<td style="padding:3px 14px 3px 0;white-space:nowrap">'
                f'<span style="color:{col};font-size:.8rem">{icon} {label}</span>{err_badge}</td>'
                f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5}</td>')
         if has_1h:
-            def _c(n):
+            def _c(n, err=0):
                 if n is None: return '<span style="color:#9ca3af">—</span>'
-                return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>'
-            row += (f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h)}</td>'
-                    f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e24h)}</td>'
+                err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
+                return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>{err_s}'
+            row += (f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h, err1h)}</td>'
+                    f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e24h, err24h)}</td>'
                     f'<td style="padding:3px 10px;text-align:right;color:#6b7280;font-size:.8rem">'
                     f'{"—" if etotal is None else etotal}</td>')
         row += '</tr>'

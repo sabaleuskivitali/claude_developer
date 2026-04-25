@@ -34,9 +34,11 @@ async def list_agents(request: Request):
         SELECT
             machine_id,
             layer,
-            COUNT(*) FILTER (WHERE timestamp_utc >= $1) AS events_1h,
-            COUNT(*) FILTER (WHERE timestamp_utc >= $2) AS events_24h,
-            COUNT(*)                                     AS events_total
+            COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type != 'LayerError') AS events_1h,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type != 'LayerError') AS events_24h,
+            COUNT(*) FILTER (WHERE event_type != 'LayerError')                          AS events_total,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type = 'LayerError')  AS errors_1h,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type = 'LayerError')  AS errors_24h
         FROM events
         WHERE timestamp_utc >= $2
           AND event_type NOT IN ('HeartbeatPulse', 'SyncCompleted')
@@ -53,6 +55,8 @@ async def list_agents(request: Request):
             "events_1h":    int(lr["events_1h"]),
             "events_24h":   int(lr["events_24h"]),
             "events_total": int(lr["events_total"]),
+            "errors_1h":    int(lr["errors_1h"]),
+            "errors_24h":   int(lr["errors_24h"]),
         }
 
     agents = []
