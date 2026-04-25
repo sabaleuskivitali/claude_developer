@@ -54,6 +54,7 @@ services:
       PORT_RANGE_END:     ${PORT_RANGE_END:-49300}
       UPDATE_PACKAGES_DIR: /updates
       CLOUD_URL:          ${CLOUD_URL:-}
+      CLOUD_SERVER_TOKEN: ${CLOUD_SERVER_TOKEN:-}
       SERVER_URL:         ${SERVER_URL:-}
       SERVER_NAME:        ${SERVER_NAME:-server}
     volumes:
