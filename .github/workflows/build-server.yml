@@ -80,6 +80,6 @@ jobs:
           -p 5322 \
           -o StrictHostKeyChecking=no \
           -o ConnectTimeout=15 \
-          nubes@195.222.86.67 \
+          nubes@${{ secrets.SERVER_HOST }} \
           "echo '${SERVER_SUDO_PASS}' | sudo -S bash -c 'cd /opt/seamlean/server && git pull && docker compose up -d --build --remove-orphans'"
         rm -f /tmp/deploy_key
