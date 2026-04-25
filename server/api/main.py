@@ -12,7 +12,7 @@ from slowapi.errors import RateLimitExceeded
 import db, storage
 
 logger = logging.getLogger(__name__)
-from routers import events, errors, heartbeat, commands, screenshots, updates, agents, etl, bootstrap
+from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap
 
 def _read_version() -> str:
     for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI):
     app.state.event_queue.start()
     await storage.ensure_bucket()
     await _ensure_bootstrap(app.state.db)
+    async with app.state.db.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS machine_wan_ips (
+                machine_id  TEXT PRIMARY KEY,
+                wan_ip      TEXT NOT NULL,
+                updated_at  BIGINT NOT NULL
+            )
+        """)
     yield
     await app.state.event_queue.stop()
     await app.state.db.close()
@@ -109,7 +117,6 @@ async def not_found(request: Request, exc):
 
 app.include_router(events.router)
 app.include_router(errors.router)
-app.include_router(heartbeat.router)
 app.include_router(commands.router)
 app.include_router(screenshots.router)
 app.include_router(updates.router)

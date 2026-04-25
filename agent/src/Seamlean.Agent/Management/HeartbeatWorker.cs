@@ -81,7 +81,17 @@ public sealed class HeartbeatWorker : BackgroundService
             EventType    = nameof(EventType.HeartbeatPulse),
             AgentVersion = version,
             Hostname     = Environment.MachineName,
+            Username     = Environment.UserName,
+            Domain       = Environment.UserDomainName,
+            LanIp        = GetLanIp(),
             LayerStats   = layerStats,
         });
     }
+
+    private static string? GetLanIp() =>
+        System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+            .FirstOrDefault(a =>
+                a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                !System.Net.IPAddress.IsLoopback(a))
+            ?.ToString();
 }

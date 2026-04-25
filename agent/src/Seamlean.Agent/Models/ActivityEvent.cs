@@ -87,6 +87,9 @@ public sealed record ActivityEvent
     // Agent metadata — populated in HeartbeatPulse events
     public string? AgentVersion { get; init; }
     public string? Hostname     { get; init; }
+    public string? Username     { get; init; }
+    public string? Domain       { get; init; }
+    public string? LanIp        { get; init; }
 
     // Per-layer health stats — populated only in HeartbeatPulse events
     public Dictionary<string, LayerStat>? LayerStats { get; init; }

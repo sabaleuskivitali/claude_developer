@@ -17,21 +17,22 @@ async def list_agents(request: Request):
     one_day_ago  = now_ms - 86_400_000
 
     rows = await request.app.state.db.fetch("""
-        SELECT DISTINCT ON (machine_id)
-            machine_id,
-            (payload->>'user_id')                                                AS user_id,
-            (payload->>'payload')::jsonb->>'AgentVersion'                        AS agent_version,
-            (payload->>'payload')::jsonb->>'Hostname'                            AS hostname,
-            (payload->>'payload')::jsonb->>'Username'                            AS username,
-            (payload->>'payload')::jsonb->>'Domain'                              AS domain,
-            (payload->>'payload')::jsonb->>'LanIp'                               AS lan_ip,
-            (payload->>'payload')::jsonb->>'WanIp'                               AS wan_ip,
-            (payload->>'drift_ms')::INT                                          AS drift_ms,
-            ((payload->>'payload')::jsonb->'LayerStats')::text                   AS layer_stats,
-            timestamp_utc
-        FROM events
-        WHERE event_type = 'HeartbeatPulse'
-        ORDER BY machine_id, timestamp_utc DESC
+        SELECT DISTINCT ON (e.machine_id)
+            e.machine_id,
+            (e.payload->>'user_id')                                                AS user_id,
+            (e.payload->>'payload')::jsonb->>'AgentVersion'                        AS agent_version,
+            (e.payload->>'payload')::jsonb->>'Hostname'                            AS hostname,
+            (e.payload->>'payload')::jsonb->>'Username'                            AS username,
+            (e.payload->>'payload')::jsonb->>'Domain'                              AS domain,
+            (e.payload->>'payload')::jsonb->>'LanIp'                               AS lan_ip,
+            w.wan_ip                                                               AS wan_ip,
+            (e.payload->>'drift_ms')::INT                                          AS drift_ms,
+            ((e.payload->>'payload')::jsonb->'LayerStats')::text                   AS layer_stats,
+            e.timestamp_utc
+        FROM events e
+        LEFT JOIN machine_wan_ips w ON w.machine_id = e.machine_id
+        WHERE e.event_type = 'HeartbeatPulse'
+        ORDER BY e.machine_id, e.timestamp_utc DESC
     """)
 
     layer_rows = await request.app.state.db.fetch("""
