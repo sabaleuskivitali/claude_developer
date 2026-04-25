@@ -67,6 +67,7 @@ public sealed class HeartbeatWorker : BackgroundService
         }
 
         var version = typeof(HeartbeatWorker).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        var (wtsUser, wtsDomain) = WtsSessionHelper.GetConsoleSessionUser();
 
         _store.Insert(new ActivityEvent
         {
@@ -81,8 +82,8 @@ public sealed class HeartbeatWorker : BackgroundService
             EventType    = nameof(EventType.HeartbeatPulse),
             AgentVersion = version,
             Hostname     = Environment.MachineName,
-            Username     = Environment.UserName,
-            Domain       = Environment.UserDomainName,
+            Username     = wtsUser,
+            Domain       = wtsDomain,
             LanIp        = GetLanIp(),
             LayerStats   = layerStats,
         });
