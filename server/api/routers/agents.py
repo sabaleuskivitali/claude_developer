@@ -46,6 +46,15 @@ async def list_agents(request: Request):
         GROUP BY machine_id, layer
     """, one_hour_ago, one_day_ago)
 
+    data_rows = await request.app.state.db.fetch("""
+        SELECT machine_id,
+               ROUND(SUM(octet_length(payload::text)) / 1048576.0, 1) AS data_mb
+        FROM events
+        GROUP BY machine_id
+    """)
+
+    data_index: dict[str, float] = {r["machine_id"]: float(r["data_mb"]) for r in data_rows}
+
     layer_index: dict[str, dict] = {}
     for lr in layer_rows:
         mid = lr["machine_id"]
@@ -82,6 +91,7 @@ async def list_agents(request: Request):
             "last_seen_ts":  r["timestamp_utc"],
             "layer_stats":   r["layer_stats"],
             "layer_counts":  layer_index.get(r["machine_id"], {}),
+            "data_mb":       data_index.get(r["machine_id"]),
         })
 
     return {"agents": agents, "count": len(agents)}
