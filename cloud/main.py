@@ -915,8 +915,37 @@ def _agent_rows(agents) -> str:
                    f'{_ST_ICON.get(st,"❓")} {st}'
                    f' {_TIP_I}</span>')
 
+        username = a.get("username")
+        domain   = a.get("domain")
+        lan_ip   = a.get("lan_ip")
+        wan_ip   = a.get("wan_ip")
+
+        user_line = ""
+        if username:
+            dom_part = (f'<span style="color:#9ca3af">@</span>'
+                        f'<code style="font-size:.74rem;background:#f3f4f6;padding:1px 5px;border-radius:4px">'
+                        f'{domain}</code>' if domain else "")
+            user_line = (f'<div style="font-size:.74rem;color:#6b7280;margin-top:2px">'
+                         f'{username}{dom_part}</div>')
+
+        ip_parts = []
+        if lan_ip:
+            ip_parts.append(
+                f'<span style="display:inline-flex;align-items:center;gap:3px">'
+                f'<span style="background:#dbeafe;color:#1d4ed8;padding:0 5px;border-radius:4px;'
+                f'font-size:.68rem;font-weight:700;line-height:16px">LAN</span>'
+                f' {lan_ip}</span>')
+        if wan_ip:
+            ip_parts.append(
+                f'<span style="display:inline-flex;align-items:center;gap:3px">'
+                f'<span style="background:#fef9c3;color:#854d0e;padding:0 5px;border-radius:4px;'
+                f'font-size:.68rem;font-weight:700;line-height:16px">WAN</span>'
+                f' {wan_ip}</span>')
+        ip_line = (f'<div style="font-size:.74rem;color:#9ca3af;margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">'
+                   f'{"".join(ip_parts)}</div>' if ip_parts else "")
+
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
-          <td style="font-size:.84rem">{host}</td>
+          <td style="font-size:.84rem">{host}{user_line}{ip_line}</td>
           <td>{badge}</td>
           <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
           <td style="color:#6b7280;font-size:.82rem">{ver}</td>
