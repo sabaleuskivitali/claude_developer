@@ -230,7 +230,16 @@ public sealed class UiAutomationCapture : BackgroundService
         catch { return ""; }
     }
 
-    private void WriteLayerError(Exception ex) =>
+    private void WriteLayerError(Exception ex)
+    {
+        // ElementNotAvailableException is expected: element disappears between event
+        // dispatch and callback. Not a layer fault — skip to avoid false alarms.
+        if (ex is ElementNotAvailableException) return;
+
+        var msg = string.IsNullOrEmpty(ex.Message)
+            ? ex.GetType().Name
+            : $"{ex.GetType().Name}: {ex.Message}";
+
         _store.Insert(new ActivityEvent
         {
             SessionId    = _store.SessionId,
@@ -242,6 +251,7 @@ public sealed class UiAutomationCapture : BackgroundService
             DriftRatePpm = _ntp.DriftRatePpm,
             Layer        = "window",
             EventType    = nameof(EventType.LayerError),
-            RawMessage   = ex.Message[..Math.Min(ex.Message.Length, 500)],
+            RawMessage   = msg[..Math.Min(msg.Length, 500)],
         });
+    }
 }
