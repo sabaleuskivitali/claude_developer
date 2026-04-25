@@ -7,8 +7,7 @@ namespace Seamlean.Agent.Management;
 /// Updated by EventStore on every Insert; polled by LayerWatchdog every 2 minutes.
 ///
 /// Thread safety:
-///   - Bucket dictionaries use ConcurrentDictionary.
-///   - Scalar fields (LastEventMs, Events5Min, Errors5Min) use Interlocked / volatile.
+///   - LayerState fields use Interlocked / volatile / MinuteWindow (internally locked).
 ///   - GetSnapshot() returns a value-copy struct so readers never race with writers.
 /// </summary>
 public sealed class LayerHealthTracker
@@ -21,21 +20,56 @@ public sealed class LayerHealthTracker
         string Status,
         bool   IsIdle);
 
-    // Mutable live state, only ever accessed through interlocked / volatile helpers
+    /// <summary>
+    /// Circular sliding window: N slots of 1 minute each.
+    /// Slot is reset when a new minute writes to the same index (modulo N).
+    /// Read() always returns the correct count for the last N minutes — no stale buckets.
+    /// </summary>
+    private sealed class MinuteWindow(int size = 5)
+    {
+        private readonly long[] _minutes = new long[size];
+        private readonly int[]  _counts  = new int[size];
+        private readonly object _lock    = new();
+
+        public void Record()
+        {
+            var minute = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 60_000;
+            lock (_lock)
+            {
+                var idx = (int)(minute % size);
+                if (_minutes[idx] != minute) { _minutes[idx] = minute; _counts[idx] = 0; }
+                _counts[idx]++;
+            }
+        }
+
+        public int Read()
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 60_000;
+            lock (_lock)
+            {
+                int total = 0;
+                for (int i = 0; i < size; i++)
+                    if (now - _minutes[i] < size)
+                        total += _counts[i];
+                return total;
+            }
+        }
+    }
+
     private sealed class LayerState
     {
-        public long _lastEventMs;                // Interlocked.Read/Exchange
-        public volatile int _events5Min;
-        public volatile int _errors5Min;
-        public volatile string _status = "inactive";  // ok | stuck | inactive | error | idle
-        public volatile bool _isIdle;
+        public long _lastEventMs;
+        public volatile string _status = "inactive";
+        public volatile bool   _isIdle;
 
-        public readonly ConcurrentDictionary<long, int> EventBuckets = new();
-        public readonly ConcurrentDictionary<long, int> ErrorBuckets = new();
+        public readonly MinuteWindow EventWindow = new(5);
+        public readonly MinuteWindow ErrorWindow = new(5);
 
         public LayerSnapshot Snapshot() => new(
             Interlocked.Read(ref _lastEventMs),
-            _events5Min, _errors5Min, _status, _isIdle);
+            EventWindow.Read(),
+            ErrorWindow.Read(),
+            _status, _isIdle);
     }
 
     public static readonly string[] KnownLayers =
@@ -57,8 +91,6 @@ public sealed class LayerHealthTracker
 
     public LayerHealthTracker()
     {
-        // Pre-seed all known layers with current time so the watchdog doesn't
-        // trigger immediately on startup if a layer hasn't fired its first event yet.
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _states = new ConcurrentDictionary<string, LayerState>(
             KnownLayers.Select(l =>
@@ -72,18 +104,9 @@ public sealed class LayerHealthTracker
 
     public void RecordEvent(string layer)
     {
-        var state  = _states.GetOrAdd(layer, _ => new LayerState());
-        var nowMs  = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var bucket = nowMs / 60_000;
-
-        Interlocked.Exchange(ref state._lastEventMs, nowMs);
-        state.EventBuckets.AddOrUpdate(bucket, 1, (_, v) => v + 1);
-
-        var cutoff = bucket - 5;
-        foreach (var k in state.EventBuckets.Keys)
-            if (k < cutoff) state.EventBuckets.TryRemove(k, out _);
-
-        state._events5Min = state.EventBuckets.Values.Sum();
+        var state = _states.GetOrAdd(layer, _ => new LayerState());
+        Interlocked.Exchange(ref state._lastEventMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        state.EventWindow.Record();
         state._isIdle = false;
 
         if (state._status is "stuck" or "inactive" or "idle")
@@ -98,22 +121,14 @@ public sealed class LayerHealthTracker
     {
         var state = _states.GetOrAdd(layer, _ => new LayerState());
         Interlocked.Exchange(ref state._lastEventMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        state._isIdle  = true;
-        state._status  = "idle";
+        state._isIdle = true;
+        state._status = "idle";
     }
 
     public void RecordError(string layer, string? message = null)
     {
-        var state  = _states.GetOrAdd(layer, _ => new LayerState());
-        var bucket = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 60_000;
-
-        state.ErrorBuckets.AddOrUpdate(bucket, 1, (_, v) => v + 1);
-
-        var cutoff = bucket - 5;
-        foreach (var k in state.ErrorBuckets.Keys)
-            if (k < cutoff) state.ErrorBuckets.TryRemove(k, out _);
-
-        state._errors5Min = state.ErrorBuckets.Values.Sum();
+        var state = _states.GetOrAdd(layer, _ => new LayerState());
+        state.ErrorWindow.Record();
         state._status = "error";
     }
 
