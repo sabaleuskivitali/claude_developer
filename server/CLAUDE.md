@@ -1,5 +1,9 @@
 # Seamlean Server — On-Prem Python Backend
 
+> **НАЗВАНИЕ СЕССИИ:** всегда начинай с `server: ` — например `server: Add analytics worker`
+> Используй `/rename server: [описание]` в начале каждой сессии.
+
+
 > Ты работаешь ТОЛЬКО в папке `server/`. Не трогай `agent/` и `cloud/`.
 > Корневой CLAUDE.md содержит общие правила проекта (git, версионирование, no hardcode).
 
