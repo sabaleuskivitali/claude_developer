@@ -16,8 +16,12 @@ def _make_client() -> Minio:
 
 
 async def ensure_bucket():
-    client = _make_client()
-    await asyncio.to_thread(_ensure_bucket_sync, client)
+    import logging
+    try:
+        client = _make_client()
+        await asyncio.to_thread(_ensure_bucket_sync, client)
+    except Exception as e:
+        logging.getLogger(__name__).warning("ensure_bucket failed (screenshots unavailable): %s", e)
 
 
 def _ensure_bucket_sync(client: Minio):
