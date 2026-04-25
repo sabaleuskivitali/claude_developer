@@ -10,6 +10,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -167,6 +168,12 @@ _VERSION = _read_version()
 app = FastAPI(title="WinDiag API", version=_VERSION, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://seamlean.com"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["X-Api-Key", "Content-Type"],
+)
 
 
 @app.middleware("http")
