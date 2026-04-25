@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Options;
+using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
 using Seamlean.Agent.Storage;
 
@@ -14,15 +15,18 @@ public sealed class IdleDetector : BackgroundService
     private readonly EventStore _store;
     private readonly NtpSynchronizer _ntp;
     private readonly AgentSettings _settings;
+    private readonly LayerHealthTracker _tracker;
 
     private bool _idleActive;
     private bool _deepIdleActive;
 
-    public IdleDetector(EventStore store, NtpSynchronizer ntp, IOptions<AgentSettings> options)
+    public IdleDetector(EventStore store, NtpSynchronizer ntp, IOptions<AgentSettings> options,
+        LayerHealthTracker tracker)
     {
         _store    = store;
         _ntp      = ntp;
         _settings = options.Value;
+        _tracker  = tracker;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -58,6 +62,14 @@ public sealed class IdleDetector : BackgroundService
             _idleActive      = false;
             _deepIdleActive  = false;
             WriteEvent(nameof(EventType.IdleEnd));
+        }
+
+        // Keep watchdog from restarting the agent while the machine is idle.
+        // window and visual layers go silent when no user is present — that is expected.
+        if (isIdle)
+        {
+            _tracker.MarkIdle("window");
+            _tracker.MarkIdle("visual");
         }
 
         if (isDeepIdle && !_deepIdleActive)
