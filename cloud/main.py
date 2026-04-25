@@ -50,14 +50,7 @@ def init_db():
         user_id TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS servers (
-        user_id TEXT PRIMARY KEY,
-        server_url TEXT NOT NULL,
-        tunnel_url TEXT,
-        api_key TEXT NOT NULL,
-        server_name TEXT DEFAULT 'Мой сервер',
-        registered_at TEXT DEFAULT (datetime('now'))
-    )""")
+    # servers table created by _migrate_servers_table() below
     conn.execute("""CREATE TABLE IF NOT EXISTS config (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -78,16 +71,59 @@ def init_db():
         conn.commit()
     except Exception:
         pass
-    for col in ["tunnel_url TEXT", "wan_url TEXT", "lan_url TEXT", "cf_tunnel_id TEXT", "heartbeat_at TEXT"]:
-        try:
-            conn.execute(f"ALTER TABLE servers ADD COLUMN {col}")
-            conn.commit()
-        except Exception:
-            pass
     conn.close()
 
 
+def _migrate_servers_table():
+    """Ensure servers table has per-server id + server_token (multi-server support)."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
+        if 'server_token' in cols:
+            return  # already migrated
+        # Create new schema
+        conn.execute("""CREATE TABLE IF NOT EXISTS servers_new (
+            id           TEXT PRIMARY KEY,
+            user_id      TEXT NOT NULL,
+            server_token TEXT UNIQUE NOT NULL,
+            server_url   TEXT NOT NULL DEFAULT 'pending',
+            tunnel_url   TEXT,
+            wan_url      TEXT,
+            lan_url      TEXT,
+            cf_tunnel_id TEXT,
+            api_key      TEXT NOT NULL DEFAULT 'pending',
+            server_name  TEXT DEFAULT 'Мой сервер',
+            heartbeat_at TEXT,
+            registered_at TEXT DEFAULT (datetime('now'))
+        )""")
+        if cols:  # old table exists — migrate data
+            existing = conn.execute("""
+                SELECT s.user_id, s.server_url, s.tunnel_url, s.wan_url, s.lan_url,
+                       s.cf_tunnel_id, s.api_key, s.server_name, s.heartbeat_at,
+                       s.registered_at, u.install_token
+                FROM servers s LEFT JOIN users u ON s.user_id = u.id
+            """).fetchall()
+            for row in existing:
+                (uid, srv_url, tun_url, wan, lan, cf_id,
+                 api_k, name, hb, reg_at, itok) = row
+                conn.execute("""INSERT OR IGNORE INTO servers_new
+                    (id, user_id, server_token, server_url, tunnel_url, wan_url, lan_url,
+                     cf_tunnel_id, api_key, server_name, heartbeat_at, registered_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uuid.uuid4().hex, uid, itok or uuid.uuid4().hex,
+                     srv_url or 'pending', tun_url, wan, lan,
+                     cf_id, api_k, name, hb, reg_at))
+            conn.execute("DROP TABLE servers")
+        conn.execute("ALTER TABLE servers_new RENAME TO servers")
+        conn.commit()
+    except Exception as e:
+        print(f"WARN: _migrate_servers_table: {e}", flush=True)
+    finally:
+        conn.close()
+
+
 init_db()
+_migrate_servers_table()
 
 
 def _config_get(key: str):
@@ -151,24 +187,55 @@ def _get_install_token(user_id: str) -> str:
     return token
 
 
-def _get_user_server(user_id: str):
+def _get_user_servers(user_id: str) -> list[dict]:
+    """Return all servers for a user (registered + pending), ordered by registration time."""
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT server_url, wan_url, lan_url, api_key, server_name, heartbeat_at, tunnel_url FROM servers WHERE user_id=?",
+    rows = conn.execute(
+        """SELECT id, server_token, server_url, wan_url, lan_url, api_key,
+                  server_name, heartbeat_at, tunnel_url, cf_tunnel_id
+           FROM servers WHERE user_id=? ORDER BY registered_at ASC""",
         (user_id,)
-    ).fetchone()
+    ).fetchall()
     conn.close()
-    if not row:
-        return None
-    return {
-        "server_url":   row[0],
-        "wan_url":      row[1],   # public IP — display only
-        "lan_url":      row[2],
-        "api_key":      row[3],
-        "server_name":  row[4],
-        "heartbeat_at": row[5],
-        "tunnel_url":   row[6],   # CF tunnel URL — health checks only
-    }
+    result = []
+    for r in rows:
+        is_pending = (r[5] == 'pending')
+        result.append({
+            "id":           r[0],
+            "server_token": r[1],
+            "server_url":   r[2],
+            "wan_url":      r[3],
+            "lan_url":      r[4],
+            "api_key":      r[5],
+            "server_name":  r[6],
+            "heartbeat_at": r[7],
+            "tunnel_url":   r[8],
+            "cf_tunnel_id": r[9],
+            "is_pending":   is_pending,
+        })
+    return result
+
+
+def _get_user_server(user_id: str):
+    """Return first registered server (backwards compat for bootstrap/installer)."""
+    for s in _get_user_servers(user_id):
+        if not s["is_pending"]:
+            return s
+    return None
+
+
+def _create_pending_server(user_id: str, server_name: str = "Мой сервер") -> str:
+    """Pre-create a pending server slot and return its unique server_token."""
+    srv_token = uuid.uuid4().hex
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """INSERT INTO servers (id, user_id, server_token, server_url, api_key, server_name)
+           VALUES (?,?,?,'pending','pending',?)""",
+        (uuid.uuid4().hex, user_id, srv_token, server_name)
+    )
+    conn.commit()
+    conn.close()
+    return srv_token
 
 
 def _is_cf_url(url: str) -> bool:
@@ -543,21 +610,36 @@ async def register_server(request: Request):
             return {"ok": False, "error": "Missing token"}
 
         conn = sqlite3.connect(DB_PATH)
-        row  = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
-        if not row:
-            conn.close()
-            return {"ok": False, "error": "Invalid token"}
 
-        user_id  = row[0]
-        existing = conn.execute(
-            "SELECT api_key, cf_tunnel_id, tunnel_url FROM servers WHERE user_id=?", (user_id,)
+        # Primary lookup: server_token in servers table (new multi-server flow)
+        srv_row = conn.execute(
+            "SELECT id, user_id, api_key, cf_tunnel_id, tunnel_url FROM servers WHERE server_token=?",
+            (install_token,)
         ).fetchone()
 
-        api_key = existing[0] if existing else uuid.uuid4().hex + uuid.uuid4().hex
+        if srv_row:
+            server_db_id         = srv_row[0]
+            user_id              = srv_row[1]
+            existing_api_key     = srv_row[2]
+            existing_cf_id       = srv_row[3]
+            existing_tunnel_url  = srv_row[4]
+        else:
+            # Fallback: old install.sh used users.install_token (backwards compat)
+            user_row = conn.execute("SELECT id FROM users WHERE install_token=?", (install_token,)).fetchone()
+            if not user_row:
+                conn.close()
+                return {"ok": False, "error": "Invalid token"}
+            user_id = user_row[0]
+            server_db_id        = uuid.uuid4().hex
+            existing_api_key    = None
+            existing_cf_id      = None
+            existing_tunnel_url = None
 
-        cf_tunnel_id = existing[1] if existing else None
+        api_key      = (existing_api_key if (existing_api_key and existing_api_key != 'pending')
+                        else uuid.uuid4().hex + uuid.uuid4().hex)
+        cf_tunnel_id = existing_cf_id
         tunnel_token = None
-        cf_url       = existing[2] if existing else None  # preserve stored tunnel_url
+        cf_url       = existing_tunnel_url  # preserve stored tunnel_url
 
         # CF tunnel: optional — only created when CF credentials are configured.
         # Also recreate if existing tunnel_url is old raw cfargotunnel.com format (no public hostname).
@@ -586,9 +668,12 @@ async def register_server(request: Request):
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         conn.execute(
             """INSERT OR REPLACE INTO servers
-               (user_id, server_url, lan_url, wan_url, tunnel_url, cf_tunnel_id, api_key, server_name, heartbeat_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (user_id, lan_url or server_url, lan_url or None, wan_url, cf_url, cf_tunnel_id, api_key, server_name, now)
+               (id, user_id, server_token, server_url, lan_url, wan_url, tunnel_url,
+                cf_tunnel_id, api_key, server_name, heartbeat_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (server_db_id, user_id, install_token,
+             lan_url or server_url, lan_url or None, wan_url,
+             cf_url, cf_tunnel_id, api_key, server_name, now)
         )
         conn.commit()
         conn.close()
@@ -861,6 +946,50 @@ def _server_extra_inline(health: dict | None) -> list[str]:
     return parts
 
 
+def _build_server_card(srv: dict) -> tuple[str, list]:
+    """Build HTML card for one registered server. Returns (html, agents_data)."""
+    wan_url    = srv.get("wan_url")
+    tunnel_url = srv.get("tunnel_url")
+    api_key    = srv["api_key"]
+    hb_age, hb_s = _heartbeat_age(srv.get("heartbeat_at"))
+
+    _STALE = 600
+    agents_data: list = []
+    if tunnel_url:
+        health      = _api(tunnel_url, api_key, "/health")
+        agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+    else:
+        health = None
+
+    if health and health.get("status") in ("ok", "degraded"):
+        status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
+    elif hb_age is not None and hb_age < _STALE:
+        status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
+    elif hb_age is not None:
+        status_badge = f'<span class="badge offline">🔴 Недоступен{hb_s}</span>'
+    else:
+        status_badge = '<span class="badge warning">⚠️ Ожидание сервера</span>'
+
+    lan_url     = srv.get("lan_url") or srv["server_url"]
+    wan_span    = (f'<span style="color:#9ca3af;font-size:.78rem">WAN: '
+                   f'<code style="font-size:.78rem">{wan_url}</code></span>') if wan_url else ""
+    extra_spans = "".join(
+        f'<span style="color:#6b7280;font-size:.82rem">{v}</span>'
+        for v in _server_extra_inline(health)
+    )
+    html = f"""
+  <div class="card" style="padding:20px 28px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="font-weight:700;font-size:.95rem;color:#374151">{srv['server_name']}</span>
+      {status_badge}
+      <span style="color:#9ca3af;font-size:.78rem">LAN: <code style="font-size:.78rem">{lan_url}</code></span>
+      {wan_span}
+      {extra_spans}
+    </div>
+  </div>"""
+    return html, agents_data
+
+
 @app.get("/cabinet", response_class=HTMLResponse)
 def cabinet(request: Request):
     token = request.cookies.get("session")
@@ -868,60 +997,32 @@ def cabinet(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=302)
 
-    install_token = _get_install_token(user["id"])
-    user_server   = _get_user_server(user["id"])
+    install_token   = _get_install_token(user["id"])
+    all_servers     = _get_user_servers(user["id"])
+    reg_servers     = [s for s in all_servers if not s["is_pending"]]
+    pending_servers = [s for s in all_servers if s["is_pending"]]
 
-    # ── Server panel ──────────────────────────────────────────────────────────
-    if user_server:
-        wan_url      = user_server.get("wan_url")    # public IP — display only
-        tunnel_url   = user_server.get("tunnel_url")  # CF URL — health checks
-        api_key      = user_server["api_key"]
-        hb_age, hb_s = _heartbeat_age(user_server.get("heartbeat_at"))
+    # ── Server panels ─────────────────────────────────────────────────────────
+    agents_data   = []
+    bootstrap_url = ""
+    server_panels = ""
 
-        # Always fetch health + agents via CF tunnel (never via raw public IP).
-        # Heartbeat is used only as fallback status when tunnel is unreachable.
-        _STALE = 600
-        hb_stale = hb_age is None or hb_age >= _STALE
-        if tunnel_url:
-            health      = _api(tunnel_url, api_key, "/health")
-            agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
-        else:
-            health      = None
-            agents_data = []
-
-        if health and health.get("status") in ("ok", "degraded"):
-            status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
-        elif hb_age is not None and hb_age < _STALE:
-            status_badge = f'<span class="badge online">🟢 Онлайн{hb_s}</span>'
-        elif hb_age is not None and hb_stale:
-            status_badge = f'<span class="badge offline">🔴 Недоступен{hb_s}</span>'
-        elif hb_age is not None:
-            status_badge = f'<span class="badge offline">🔴 Недоступен{hb_s}</span>'
-        else:
-            status_badge = '<span class="badge warning">⚠️ Ожидание сервера</span>'
-
-        lan_url = user_server.get("lan_url") or user_server["server_url"]
-
-        wan_span = (f'<span style="color:#9ca3af;font-size:.78rem">WAN: '
-                    f'<code style="font-size:.78rem">{wan_url}</code></span>') if wan_url else ""
-        extra_spans = "".join(
-            f'<span style="color:#6b7280;font-size:.82rem">{v}</span>'
-            for v in _server_extra_inline(health)
-        )
-        server_panel = f"""
-  <div class="card" style="padding:20px 28px">
-    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <span style="font-weight:700;font-size:.95rem;color:#374151">{user_server['server_name']}</span>
-      {status_badge}
-      <span style="color:#9ca3af;font-size:.78rem">LAN: <code style="font-size:.78rem">{lan_url}</code></span>
-      {wan_span}
-      {extra_spans}
-    </div>
-  </div>"""
-        bootstrap_url = user_server["server_url"]
+    if reg_servers:
+        for srv in reg_servers:
+            card_html, srv_agents = _build_server_card(srv)
+            server_panels += card_html
+            agents_data.extend(srv_agents)
+            if not bootstrap_url:
+                bootstrap_url = srv["server_url"]
     else:
-        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}"
-        server_panel = f"""
+        # No registered servers — show install card with a pending server token
+        if pending_servers:
+            first_token = pending_servers[0]["server_token"]
+            pending_servers = pending_servers[1:]  # rest stay as "add server" candidates
+        else:
+            first_token = _create_pending_server(user["id"])
+        install_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {first_token}"
+        server_panels = f"""
   <div class="card">
     <div class="sec-title">Установить сервер</div>
     <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:</p>
@@ -931,8 +1032,6 @@ def cabinet(request: Request):
     </div>
     <p class="hint">Команда установит Docker, сервер и все сервисы. После завершения сервер появится здесь автоматически.</p>
   </div>"""
-        agents_data   = []
-        bootstrap_url = ""
 
     # ── Agents panel ──────────────────────────────────────────────────────────
     online = sum(1 for a in agents_data if a.get("status") == "online")
@@ -976,6 +1075,41 @@ def cabinet(request: Request):
     else:
         agent_install_section = '<p style="color:#9ca3af;font-size:.88rem">Сначала установите и запустите сервер — ссылка на агента появится здесь.</p>'
 
+    # ── "Добавить сервер" section (only when ≥1 server registered) ───────────
+    if reg_servers:
+        if pending_servers:
+            add_tok = pending_servers[0]["server_token"]
+            add_cmd = f"curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {add_tok}"
+            add_content = f"""
+      <div class="copy-row">
+        <div class="code-box" id="srv-add">{add_cmd}</div>
+        <button class="btn btn-gray" id="srv-add-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('srv-add')">Скопировать</button>
+      </div>
+      <p class="hint">Токен уникален для этого сервера и не совпадает с токенами других серверов.</p>"""
+        else:
+            add_content = """
+      <form method="post" action="/cabinet/new-server-token">
+        <button class="btn" style="padding:8px 18px;font-size:.86rem">Создать токен для нового сервера</button>
+      </form>
+      <p class="hint" style="margin-top:8px">Каждый сервер получает уникальный токен установки.</p>"""
+        add_server_card = f"""
+<div class="card" style="padding:16px 28px">
+  <details>
+    <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;
+                    font-size:.92rem;font-weight:700;color:#374151;user-select:none">
+      <span style="font-size:1.1rem;color:#4f46e5">+</span> Добавить сервер
+    </summary>
+    <div style="margin-top:14px;border-top:1px solid #f3f4f6;padding-top:14px">
+      <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">
+        Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:
+      </p>
+      {add_content}
+    </div>
+  </details>
+</div>"""
+    else:
+        add_server_card = ""
+
     nav = f"""
     <span>{user['email']}</span>
     <form method="post" action="/logout" style="display:inline">
@@ -983,7 +1117,7 @@ def cabinet(request: Request):
     </form>"""
 
     body = f"""
-{server_panel}
+{server_panels}
 <div class="card">
   {agent_install_section}
 </div>
@@ -1007,24 +1141,7 @@ function toggleLayer(id) {{
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }}
 </script>
-<div class="card" style="padding:16px 28px">
-  <details>
-    <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;
-                    font-size:.92rem;font-weight:700;color:#374151;user-select:none">
-      <span style="font-size:1.1rem;color:#4f46e5">+</span> Добавить сервер
-    </summary>
-    <div style="margin-top:14px;border-top:1px solid #f3f4f6;padding-top:14px">
-      <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">
-        Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:
-      </p>
-      <div class="copy-row">
-        <div class="code-box" id="srv-add">curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}</div>
-        <button class="btn btn-gray" id="srv-add-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('srv-add')">Скопировать</button>
-      </div>
-      <p class="hint">Новый сервер появится в кабинете. К нему можно будет подключить отдельных агентов.</p>
-    </div>
-  </details>
-</div>"""
+{add_server_card}"""
 
     return _page("Кабинет — Seamlean", nav, body, wide=True)
 
@@ -1345,6 +1462,19 @@ async def generate_install_code(request: Request):
     )
     conn.commit()
     conn.close()
+    return RedirectResponse("/cabinet", status_code=303)
+
+
+# ── New server token (cabinet) ────────────────────────────────────────────────
+
+@app.post("/cabinet/new-server-token")
+async def new_server_token(request: Request):
+    """Create a new pending server slot with a unique server_token."""
+    token = request.cookies.get("session")
+    user  = _db_user_by_session(token)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    _create_pending_server(user["id"], server_name="Новый сервер")
     return RedirectResponse("/cabinet", status_code=303)
 
 
