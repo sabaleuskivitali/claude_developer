@@ -176,6 +176,17 @@ def _is_cf_url(url: str) -> bool:
     return bool(url) and not re.match(r'https?://\d+\.\d+\.\d+\.\d+', url)
 
 
+def _fmt_expires(expires_at: str) -> str:
+    """Format ISO datetime as human-readable expiry with date and time."""
+    try:
+        dt = datetime.datetime.fromisoformat(expires_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.strftime("%d.%m.%Y %H:%M UTC")
+    except Exception:
+        return expires_at[:10]
+
+
 def _heartbeat_age(heartbeat_at: str | None) -> tuple[int | None, str]:
     """Returns (age_seconds, human_readable_string). age=None if no heartbeat."""
     if not heartbeat_at:
@@ -612,6 +623,12 @@ _LAYER_LABELS = {"window": "Окна", "visual": "Скрины", "system": "Си
                  "applogs": "Логи", "browser": "Браузер"}
 _ST_ICON = {"online": "🟢", "warning": "🟡", "offline": "🔴"}
 
+# Tooltip "i" badge — used everywhere instead of "?"
+_TIP_I = ('<span style="display:inline-block;width:14px;height:14px;background:#e5e7eb;'
+          'border-radius:50%;font-size:.6rem;font-style:italic;font-weight:700;'
+          'text-align:center;line-height:14px;cursor:help;color:#6b7280;'
+          'vertical-align:middle;margin-left:2px">i</span>')
+
 
 def _parse_layer_stats(layer_stats, layer_counts=None):
     try:
@@ -646,7 +663,9 @@ def _parse_layer_stats(layer_stats, layer_counts=None):
 
 def _collection_badge(stats: dict, is_offline: bool = False) -> str:
     if is_offline:
-        return '<span style="color:#9ca3af;font-size:.82rem">Неизвестно</span>'
+        return (f'<span style="color:#9ca3af;font-size:.82rem" '
+                f'title="Агент не выходил на связь — статус сбора данных неизвестен">'
+                f'Неизвестно {_TIP_I}</span>')
     if not stats:
         return '<span style="color:#9ca3af;font-size:.82rem">нет данных</span>'
 
@@ -668,7 +687,7 @@ def _collection_badge(stats: dict, is_offline: bool = False) -> str:
     _tip = lambda key: f' title="{_TIPS[key]}"'
     _b   = lambda bg, col, txt, tip: (f'<span style="background:{bg};color:{col};padding:2px 9px;'
                                       f'border-radius:12px;font-size:.78rem;font-weight:600"{_tip(tip)}>'
-                                      f'{txt} <span style="opacity:.6;font-size:.7rem">?</span></span>')
+                                      f'{txt} {_TIP_I}</span>')
     if has_errors:
         return _b("#fee2e2", "#991b1b", "⚠ Ошибки", "errors")
 
@@ -684,7 +703,7 @@ def _collection_badge(stats: dict, is_offline: bool = False) -> str:
     # Fallback: 5min data only
     active = sum(1 for v in known.values() if (v.get("events_5min") or 0) > 0)
     if active == 0:
-        return f'<span style="color:#9ca3af;font-size:.82rem"{_tip("no_events")}>нет событий <span style="opacity:.6;font-size:.7rem">?</span></span>'
+        return f'<span style="color:#9ca3af;font-size:.82rem"{_tip("no_events")}>нет событий {_TIP_I}</span>'
     return _b("#d1fae5", "#065f46", "✅ Работает", "ok")
 
 
@@ -696,14 +715,23 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
     header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">5 МИН</th>'
     if has_1h:
         header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">1 ЧАС</th>'
-        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">СУТКИ</th>'
+        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">24Ч</th>'
         header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">ВСЁ ВРЕМЯ</th>'
     header += '</tr>'
 
     def _c(n, err=0):
+        """1h column: None→'—', 0→red, N→normal"""
         if n is None: return '<span style="color:#9ca3af">—</span>'
         err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
         return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>{err_s}'
+
+    def _c24(n, err=0):
+        """24h column: None or 0→'—' (no data), N→normal"""
+        if n is None or n == 0:
+            err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
+            return f'<span style="color:#9ca3af">—</span>{err_s}'
+        err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
+        return f'<span style="color:#374151">{n}</span>{err_s}'
 
     data_rows = ""
     total_1h = total_24h = total_total = total_5min = 0
@@ -713,9 +741,10 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
         if v is None:
             e5, e1h, e24h, etotal, err1h, err24h = None, None, None, None, 0, 0
         else:
-            e5     = 0 if is_offline else (v.get("events_5min") or 0)
-            e1h    = v.get("events_1h")
-            e24h   = v.get("events_24h")
+            # Offline: 5min and 1h always "—" (machine isn't sending)
+            e5     = None if is_offline else (v.get("events_5min") or 0)
+            e1h    = None if is_offline else v.get("events_1h")
+            e24h   = v.get("events_24h")   # keep real 24h data even for offline
             etotal = v.get("events_total")
             err1h  = (v.get("errors_1h")  or 0)
             err24h = (v.get("errors_24h") or 0)
@@ -742,18 +771,21 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
                f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5_cell}</td>')
         if has_1h:
             row += (f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h, err1h)}</td>'
-                    f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e24h, err24h)}</td>'
+                    f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c24(e24h, err24h)}</td>'
                     f'<td style="padding:3px 10px;text-align:right;color:#6b7280;font-size:.8rem">'
                     f'{"—" if etotal is None else etotal}</td>')
         row += '</tr>'
         data_rows += row
 
+    t5s  = '—' if is_offline else total_5min
+    t24s = '—' if total_24h  == 0 else total_24h
     total_row = (f'<tr style="border-top:1px solid #e5e7eb;font-weight:600">'
                  f'<td style="padding:4px 14px 4px 0;color:#374151;font-size:.8rem">Итого</td>'
-                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{total_5min}</td>')
+                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t5s}</td>')
     if has_1h:
-        total_row += (f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{total_1h}</td>'
-                      f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{total_24h}</td>'
+        t1s = '—' if is_offline else total_1h
+        total_row += (f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t1s}</td>'
+                      f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t24s}</td>'
                       f'<td style="padding:4px 10px;text-align:right;color:#6b7280;font-size:.8rem">{total_total}</td>')
     total_row += '</tr>'
 
@@ -796,7 +828,7 @@ def _agent_rows(agents) -> str:
         st_tip  = _ST_TIPS.get(st, "")
         badge   = (f'<span class="badge {st}" title="{st_tip}">'
                    f'{_ST_ICON.get(st,"❓")} {st}'
-                   f' <span style="opacity:.6;font-size:.7rem">?</span></span>')
+                   f' {_TIP_I}</span>')
 
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
           <td style="font-size:.84rem">{host}</td>
@@ -816,13 +848,16 @@ def _server_extra_inline(health: dict | None) -> list[str]:
         return []
     parts = []
     if health.get("version"):
-        parts.append(f"v{health['version']}")
+        parts.append(f"Версия {health['version']}")
     if health.get("db"):
         db_ok = health["db"] == "ok"
         db_size = f" {health['db_size_mb']} MB" if health.get("db_size_mb") is not None else ""
         parts.append(f'{"✅" if db_ok else "⚠️"} DB{db_size}')
     if health.get("disk_free_gb") is not None:
-        parts.append(f"Диск: {health['disk_free_gb']} GB")
+        free  = health["disk_free_gb"]
+        total = health.get("disk_total_gb")
+        disk_s = f"Диск: {free} GB своб." + (f" / {total} GB" if total else "")
+        parts.append(disk_s)
     return parts
 
 
@@ -924,9 +959,12 @@ def cabinet(request: Request):
     <div class="copy-row">
       <div class="code-box" id="burl">{exe_cmd}</div>
       <button class="btn btn-gray" id="burl-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('burl')">Скопировать</button>
+      <form method="post" action="/cabinet/generate-install-code" style="display:inline;margin:0">
+        <button class="btn btn-gray" style="padding:7px 14px;font-size:.82rem;white-space:nowrap">Обновить</button>
+      </form>
     </div>
     <p class="hint">Или отправьте ссылку пользователю: <a href="{install_url}" style="color:#4f46e5">{install_url}</a></p>
-    <p class="hint">Агент установится тихо, без перезагрузки. Ссылка действует до {code_row[1][:10]}.</p>"""
+    <p class="hint">Агент установится тихо, без перезагрузки. Ссылка действует до {_fmt_expires(code_row[1])}.</p>"""
         else:
             install_link_html = f"""
     <div class="sec-title">Установить агент на Windows</div>
@@ -956,7 +994,8 @@ def cabinet(request: Request):
   </div>
   <table>
     <thead><tr>
-      <th>Машина</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th><th>Drift</th><th>Данные</th>
+      <th>Машина</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th>
+      <th title="NTP-дрейф часов агента относительно эталонного времени. Норма: ±50 мс. При больших значениях временна́я корреляция событий между машинами может быть неточной.">Drift {_TIP_I}</th><th>Данные</th>
     </tr></thead>
     <tbody>{_agent_rows(agents_data)}</tbody>
   </table>
@@ -967,7 +1006,25 @@ function toggleLayer(id) {{
   var row = document.getElementById('layer-' + id);
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }}
-</script>"""
+</script>
+<div class="card" style="padding:16px 28px">
+  <details>
+    <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;
+                    font-size:.92rem;font-weight:700;color:#374151;user-select:none">
+      <span style="font-size:1.1rem;color:#4f46e5">+</span> Добавить сервер
+    </summary>
+    <div style="margin-top:14px;border-top:1px solid #f3f4f6;padding-top:14px">
+      <p style="font-size:.85rem;color:#6b7280;margin-bottom:10px">
+        Ubuntu 20.04+, 2 CPU, 4 GB RAM, исходящий интернет:
+      </p>
+      <div class="copy-row">
+        <div class="code-box" id="srv-add">curl -fsSL https://seamlean.com/install.sh | sudo bash -s -- --token {install_token}</div>
+        <button class="btn btn-gray" id="srv-add-btn" style="padding:7px 14px;font-size:.82rem;white-space:nowrap" onclick="copyText('srv-add')">Скопировать</button>
+      </div>
+      <p class="hint">Новый сервер появится в кабинете. К нему можно будет подключить отдельных агентов.</p>
+    </div>
+  </details>
+</div>"""
 
     return _page("Кабинет — Seamlean", nav, body, wide=True)
 

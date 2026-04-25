@@ -146,8 +146,10 @@ async def health(request: Request):
     # Disk space
     try:
         total, used, free = shutil.disk_usage("/")
-        free_gb = round(free / 1024 ** 3, 1)
-        checks["disk_free_gb"] = free_gb
+        free_gb  = round(free  / 1024 ** 3, 1)
+        total_gb = round(total / 1024 ** 3, 1)
+        checks["disk_free_gb"]  = free_gb
+        checks["disk_total_gb"] = total_gb
         if free_gb < 5:
             checks["disk"] = "warning: low"
             status = "degraded"
