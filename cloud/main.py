@@ -658,30 +658,37 @@ def _collection_badge(stats: dict, is_offline: bool = False) -> str:
     has_errors = any((v.get("errors_24h") or 0) > 0 for v in known.values())
     has_1h_data = any(v.get("events_1h") is not None for v in known.values())
 
-    _b = lambda bg, col, txt: (f'<span style="background:{bg};color:{col};padding:2px 9px;'
-                                f'border-radius:12px;font-size:.78rem;font-weight:600">{txt}</span>')
+    _TIPS = {
+        "ok":       "Все активные слои присылали события в последний час",
+        "errors":   "За последние сутки есть LayerError события в одном или нескольких слоях",
+        "no_data":  "За последние сутки нет ни одного события ни в одном слое",
+        "no_1h":    "Один или несколько активных слоёв не присылали события в последний час",
+        "no_events":"Нет событий за последние 5 минут",
+    }
+    _tip = lambda key: f' title="{_TIPS[key]}"'
+    _b   = lambda bg, col, txt, tip: (f'<span style="background:{bg};color:{col};padding:2px 9px;'
+                                      f'border-radius:12px;font-size:.78rem;font-weight:600"{_tip(tip)}>'
+                                      f'{txt} <span style="opacity:.6;font-size:.7rem">?</span></span>')
     if has_errors:
-        return _b("#fee2e2", "#991b1b", "⚠ Ошибки")
+        return _b("#fee2e2", "#991b1b", "⚠ Ошибки", "errors")
 
     if has_1h_data:
-        # Active layers = those with any events in 24h
         active_24h = {k for k, v in known.items() if (v.get("events_24h") or 0) > 0}
         if not active_24h:
-            return _b("#fee2e2", "#991b1b", "❌ Не работает")
-        # Any active layer missing events in last hour → warn
+            return _b("#fee2e2", "#991b1b", "❌ Не работает", "no_data")
         warn = any((known[k].get("events_1h") or 0) == 0 for k in active_24h)
         if warn:
-            return _b("#fef3c7", "#92400e", "⚠ Нет событий за час")
-        return _b("#d1fae5", "#065f46", "✅ Работает")
+            return _b("#fef3c7", "#92400e", "⚠ Нет событий за час", "no_1h")
+        return _b("#d1fae5", "#065f46", "✅ Работает", "ok")
 
     # Fallback: 5min data only
     active = sum(1 for v in known.values() if (v.get("events_5min") or 0) > 0)
     if active == 0:
-        return '<span style="color:#9ca3af;font-size:.82rem">нет событий</span>'
-    return _b("#d1fae5", "#065f46", "✅ Работает")
+        return f'<span style="color:#9ca3af;font-size:.82rem"{_tip("no_events")}>нет событий <span style="opacity:.6;font-size:.7rem">?</span></span>'
+    return _b("#d1fae5", "#065f46", "✅ Работает", "ok")
 
 
-def _layers_detail_row(row_id: str, stats: dict) -> str:
+def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> str:
     has_1h = any(v.get("events_1h") is not None for v in stats.values())
 
     header = '<tr style="border-bottom:1px solid #e5e7eb">'
@@ -690,21 +697,30 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
     if has_1h:
         header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">1 ЧАС</th>'
         header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">СУТКИ</th>'
-        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">ИТОГО</th>'
+        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">ВСЁ ВРЕМЯ</th>'
     header += '</tr>'
+
+    def _c(n, err=0):
+        if n is None: return '<span style="color:#9ca3af">—</span>'
+        err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
+        return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>{err_s}'
 
     data_rows = ""
     total_1h = total_24h = total_total = total_5min = 0
     for key, label in _LAYER_LABELS.items():
         v      = stats.get(key)
-        e5     = (v.get("events_5min") or 0) if v else 0
-        e1h    = v.get("events_1h")    if v else None
-        e24h   = v.get("events_24h")   if v else None
-        etotal = v.get("events_total") if v else None
-        err1h  = (v.get("errors_1h")  or 0) if v else 0
-        err24h = (v.get("errors_24h") or 0) if v else 0
+        # None means the layer never appeared in DB or heartbeat → show "—" everywhere
+        if v is None:
+            e5, e1h, e24h, etotal, err1h, err24h = None, None, None, None, 0, 0
+        else:
+            e5     = 0 if is_offline else (v.get("events_5min") or 0)
+            e1h    = v.get("events_1h")
+            e24h   = v.get("events_24h")
+            etotal = v.get("events_total")
+            err1h  = (v.get("errors_1h")  or 0)
+            err24h = (v.get("errors_24h") or 0)
 
-        total_5min += e5
+        if e5     is not None: total_5min  += e5
         if e1h    is not None: total_1h    += e1h
         if e24h   is not None: total_24h   += e24h
         if etotal is not None: total_total += etotal
@@ -713,23 +729,18 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
             icon, col = "—", "#9ca3af"
         elif err24h:
             icon, col = "⚠", "#991b1b"
-        elif e5 > 0:
-            icon, col = "✅", "#065f46"
-        elif e1h and e1h > 0:
+        elif (e5 or 0) > 0 or (e1h or 0) > 0:
             icon, col = "✅", "#065f46"
         else:
             icon, col = "○", "#9ca3af"
 
         err_badge = (f' <span style="color:#991b1b;font-size:.7rem">({err24h} err)</span>' if err24h else "")
+        e5_cell = '—' if e5 is None else e5
         row = (f'<tr>'
                f'<td style="padding:3px 14px 3px 0;white-space:nowrap">'
                f'<span style="color:{col};font-size:.8rem">{icon} {label}</span>{err_badge}</td>'
-               f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5}</td>')
+               f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5_cell}</td>')
         if has_1h:
-            def _c(n, err=0):
-                if n is None: return '<span style="color:#9ca3af">—</span>'
-                err_s = (f' <span style="color:#991b1b;font-size:.65rem">+{err}err</span>' if err else "")
-                return f'<span style="color:{"#dc2626" if n==0 else "#374151"}">{n}</span>{err_s}'
             row += (f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h, err1h)}</td>'
                     f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e24h, err24h)}</td>'
                     f'<td style="padding:3px 10px;text-align:right;color:#6b7280;font-size:.8rem">'
@@ -748,13 +759,21 @@ def _layers_detail_row(row_id: str, stats: dict) -> str:
 
     inner = (f'<table style="border-collapse:collapse;border:0">'
              f'{header}{data_rows}{total_row}</table>')
+    colspan = 7 if any(a.get("data_mb") is not None for a in []) else 7
     return (f'<tr id="layer-{row_id}" style="display:none;background:#f8fafc">'
-            f'<td colspan="6" style="padding:8px 12px 12px 32px">{inner}</td></tr>')
+            f'<td colspan="7" style="padding:8px 12px 12px 32px">{inner}</td></tr>')
+
+
+_ST_TIPS = {
+    "online":  "Heartbeat получен менее 2 минут назад",
+    "warning": "Heartbeat получен 2–15 минут назад",
+    "offline": "Heartbeat не получен более 15 минут назад",
+}
 
 
 def _agent_rows(agents) -> str:
     if not agents:
-        return ('<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px">'
+        return ('<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:20px">'
                 'Агентов нет. Установите первого с помощью команды выше.</td></tr>')
     rows = ""
     for i, a in enumerate(agents):
@@ -769,15 +788,26 @@ def _agent_rows(agents) -> str:
         is_offline = (st == "offline")
         stats  = _parse_layer_stats(a.get("layer_stats"), a.get("layer_counts"))
         rid    = f"a{i}"
+
+        data_mb = a.get("data_mb")
+        data_s  = (f'<span style="color:#6b7280;font-size:.82rem">{data_mb} МБ</span>'
+                   if data_mb is not None else '<span style="color:#9ca3af;font-size:.82rem">—</span>')
+
+        st_tip  = _ST_TIPS.get(st, "")
+        badge   = (f'<span class="badge {st}" title="{st_tip}">'
+                   f'{_ST_ICON.get(st,"❓")} {st}'
+                   f' <span style="opacity:.6;font-size:.7rem">?</span></span>')
+
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
           <td style="font-size:.84rem">{host}</td>
-          <td><span class="badge {st}">{_ST_ICON.get(st,'❓')} {st}</span></td>
+          <td>{badge}</td>
           <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
           <td style="color:#6b7280;font-size:.82rem">{ver}</td>
           <td>{_collection_badge(stats, is_offline)}</td>
           <td>{drift_s}</td>
+          <td>{data_s}</td>
         </tr>"""
-        rows += _layers_detail_row(rid, stats)
+        rows += _layers_detail_row(rid, stats, is_offline)
     return rows
 
 
@@ -926,7 +956,7 @@ def cabinet(request: Request):
   </div>
   <table>
     <thead><tr>
-      <th>Машина</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th><th>Drift</th>
+      <th>Машина</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th><th>Drift</th><th>Данные</th>
     </tr></thead>
     <tbody>{_agent_rows(agents_data)}</tbody>
   </table>
