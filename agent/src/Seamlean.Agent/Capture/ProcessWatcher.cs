@@ -43,14 +43,16 @@ public sealed class ProcessWatcher : BackgroundService
 
         try
         {
+            // Use __InstanceCreationEvent (WMI polling, no elevated rights required).
+            // Win32_ProcessStartTrace/StopTrace are ETW-backed and fail for non-admin users.
             startWatcher = new ManagementEventWatcher(
-                new WqlEventQuery("SELECT * FROM Win32_ProcessStartTrace"));
+                new WqlEventQuery("SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"));
             startWatcher.EventArrived += (_, e) =>
                 HandleProcess(e.NewEvent, nameof(EventType.ProcessStart));
             startWatcher.Start();
 
             stopWatcher = new ManagementEventWatcher(
-                new WqlEventQuery("SELECT * FROM Win32_ProcessStopTrace"));
+                new WqlEventQuery("SELECT * FROM __InstanceDeletionEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"));
             stopWatcher.EventArrived += (_, e) =>
                 HandleProcess(e.NewEvent, nameof(EventType.ProcessStop));
             stopWatcher.Start();
@@ -74,7 +76,8 @@ public sealed class ProcessWatcher : BackgroundService
     {
         try
         {
-            var processName = ev["ProcessName"]?.ToString() ?? "";
+            var target      = ev["TargetInstance"] as ManagementBaseObject;
+            var processName = target?["Name"]?.ToString() ?? "";
             var raw = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             _store.Insert(new ActivityEvent
