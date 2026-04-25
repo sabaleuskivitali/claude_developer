@@ -1,0 +1,65 @@
+#!/bin/bash
+set -e
+
+COMPONENT=${1:?Usage: ./release <agent|server|cloud> ["commit message"]}
+MSG=${2:-""}
+BRANCH="work/$COMPONENT"
+
+WORKTREES=(
+  ["agent"]="$HOME/Applications/seamlean-agent"
+  ["server"]="$HOME/Applications/seamlean-server"
+  ["cloud"]="$HOME/Applications/seamlean-cloud"
+)
+WORKTREE="${WORKTREES[$COMPONENT]}"
+
+if [ -z "$WORKTREE" ]; then
+  echo "❌ Неизвестный компонент: $COMPONENT (agent | server | cloud)"
+  exit 1
+fi
+
+# --- Определяем версию по последнему тегу ---
+LAST_TAG=$(git tag -l "$COMPONENT/v*" | sort -V | tail -1)
+
+if [ -z "$LAST_TAG" ]; then
+  VERSION="0.1.0"
+  echo "ℹ️  Тегов нет, начинаем с v$VERSION"
+else
+  # Извлекаем X.Y.Z из "component/vX.Y.Z"
+  LAST_VERSION="${LAST_TAG#$COMPONENT/v}"
+  IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
+  PATCH=$((PATCH + 1))
+  VERSION="$MAJOR.$MINOR.$PATCH"
+  echo "📦 $LAST_TAG → v$VERSION"
+fi
+
+TAG="$COMPONENT/v$VERSION"
+
+# --- Пишем VERSION в worktree ---
+echo "$VERSION" > "$WORKTREE/$COMPONENT/VERSION"
+
+# --- Коммит в worktree ---
+cd "$WORKTREE"
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  COMMIT_MSG="${MSG:-"$COMPONENT: v$VERSION"}"
+  echo "📝 Коммит в $BRANCH: \"$COMMIT_MSG\""
+  git add -A
+  git commit -m "$COMMIT_MSG"
+else
+  echo "✅ Нечего коммитить в $BRANCH"
+fi
+
+# --- Merge → push → tag ---
+cd "$HOME/Applications/Claude/Dev"
+
+echo "🔀 Merging $BRANCH → main..."
+git merge "$BRANCH" --no-edit
+
+echo "⬆️  Pushing main..."
+git push origin main
+
+echo "🏷️  Tagging $TAG..."
+git tag "$TAG"
+git push origin "$TAG"
+
+echo ""
+echo "✅ $TAG — CI собирает, Release появится на GitHub"
