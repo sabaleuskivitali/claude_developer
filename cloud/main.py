@@ -381,7 +381,7 @@ nav{background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px;height:52px;d
 .nav-brand{font-weight:700;font-size:1.05rem;color:#111;text-decoration:none}
 .nav-right{display:flex;align-items:center;gap:12px;font-size:.85rem;color:#666}
 .wrap{max-width:480px;margin:60px auto;padding:0 16px}
-.wrap-wide{max-width:860px;margin:40px auto;padding:0 20px}
+.wrap-wide{max-width:1100px;margin:40px auto;padding:0 20px}
 .card{background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:20px}
 h1{font-size:1.5rem;font-weight:700;margin-bottom:6px}
 .sub{color:#666;font-size:.9rem;margin-bottom:22px}
