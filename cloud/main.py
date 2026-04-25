@@ -1068,6 +1068,8 @@ def _build_server_card(srv: dict) -> tuple[str, list]:
         f'<span style="color:#6b7280;font-size:.82rem">{v}</span>'
         for v in _server_extra_inline(health)
     )
+    extra_row = (f'<div style="margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">{extra_spans}</div>'
+                 if extra_spans else "")
     html = f"""
   <div class="card" style="padding:20px 28px">
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -1075,8 +1077,8 @@ def _build_server_card(srv: dict) -> tuple[str, list]:
       {status_badge}
       <span style="color:#9ca3af;font-size:.78rem">LAN: <code style="font-size:.78rem">{lan_url}</code></span>
       {wan_span}
-      {extra_spans}
     </div>
+    {extra_row}
   </div>"""
     return html, agents_data
 
