@@ -1,5 +1,9 @@
 # Seamlean Cloud — SaaS Manager Cabinet
 
+> **НАЗВАНИЕ СЕССИИ:** всегда начинай с `cloud: ` — например `cloud: Add policy editor UI`
+> Используй `/rename cloud: [описание]` в начале каждой сессии.
+
+
 > Ты работаешь ТОЛЬКО в папке `cloud/`. Не трогай `agent/` и `server/`.
 > Корневой CLAUDE.md содержит общие правила проекта (git, версионирование, no hardcode).
 

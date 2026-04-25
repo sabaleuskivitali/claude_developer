@@ -892,9 +892,8 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
 
     inner = (f'<table style="border-collapse:collapse;border:0">'
              f'{header}{data_rows}{total_row}</table>')
-    colspan = 7 if any(a.get("data_mb") is not None for a in []) else 7
     return (f'<tr id="layer-{row_id}" style="display:none;background:#f8fafc">'
-            f'<td colspan="7" style="padding:8px 12px 12px 32px">{inner}</td></tr>')
+            f'<td colspan="9" style="padding:8px 12px 12px 32px">{inner}</td></tr>')
 
 
 _ST_TIPS = {
@@ -906,7 +905,7 @@ _ST_TIPS = {
 
 def _agent_rows(agents) -> str:
     if not agents:
-        return ('<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:20px">'
+        return ('<tr><td colspan="9" style="text-align:center;color:#9ca3af;padding:20px">'
                 'Агентов нет. Установите первого с помощью команды выше.</td></tr>')
     latest_ver      = _config_get("latest_agent_version") or ""
     latest_released = _config_get("latest_agent_released_at") or ""
@@ -920,6 +919,7 @@ def _agent_rows(agents) -> str:
         latest_released_s = ""
     latest_tip = (f"Последняя stable: v{latest_ver} · {latest_released_s}" if latest_ver else "")
     rows = ""
+    srv_counters: dict = {}
     for i, a in enumerate(agents):
         lag    = a.get("lag_sec", 0)
         drift  = a.get("drift_ms")
@@ -968,12 +968,15 @@ def _agent_rows(agents) -> str:
                 f'<span style="background:#fef9c3;color:#854d0e;padding:0 5px;border-radius:4px;'
                 f'font-size:.68rem;font-weight:700;line-height:16px">WAN</span>'
                 f' {wan_ip}</span>')
-        ip_line = (f'<div style="font-size:.74rem;color:#9ca3af;margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">'
-                   f'{"".join(ip_parts)}</div>' if ip_parts else "")
+        ip_cell = (f'<div style="font-size:.74rem;color:#9ca3af;display:flex;gap:8px;flex-wrap:wrap">'
+                   f'{"".join(ip_parts)}</div>' if ip_parts else
+                   '<span style="color:#d1d5db;font-size:.82rem">—</span>')
 
         machine_id  = a.get("machine_id", "")
         srv_url     = a.get("_server_url", "")
         srv_api_key = a.get("_api_key", "")
+        srv_counters[srv_url] = srv_counters.get(srv_url, 0) + 1
+        num = srv_counters[srv_url]
         is_outdated = latest_ver and ver not in ("—", "") and ver != latest_ver
         ver_color   = "#dc2626" if is_outdated else "#6b7280"
         ver_tip     = latest_tip if is_outdated else (latest_tip or "")
@@ -998,13 +1001,15 @@ def _agent_rows(agents) -> str:
         )
 
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
-          <td style="font-size:.84rem">{host}{user_line}{ip_line}</td>
-          <td>{badge}</td>
-          <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
-          <td>{ver_cell}</td>
-          <td>{_collection_badge(stats, is_offline)}</td>
-          <td>{drift_s}</td>
-          <td>{data_s}</td>
+          <td style="white-space:nowrap;color:#9ca3af;font-size:.82rem;text-align:center">{num}</td>
+          <td style="font-size:.84rem">{host}{user_line}</td>
+          <td>{ip_cell}</td>
+          <td style="white-space:nowrap">{badge}</td>
+          <td style="white-space:nowrap;color:#6b7280;font-size:.82rem">{last} назад</td>
+          <td style="white-space:nowrap">{ver_cell}</td>
+          <td style="white-space:nowrap">{_collection_badge(stats, is_offline)}</td>
+          <td style="white-space:nowrap">{drift_s}</td>
+          <td style="white-space:nowrap">{data_s}</td>
         </tr>"""
         rows += _layers_detail_row(rid, stats, is_offline)
     return rows
@@ -1214,8 +1219,8 @@ def cabinet(request: Request):
   </div>
   <table>
     <thead><tr>
-      <th>Машина</th><th>Агент</th><th>Last seen</th><th>Версия</th><th>Сбор данных</th>
-      <th title="NTP-дрейф часов агента относительно эталонного времени. Норма: ±50 мс. При больших значениях временна́я корреляция событий между машинами может быть неточной.">Drift {_TIP_I}</th><th>Данные</th>
+      <th style="white-space:nowrap">№</th><th>Машина / Пользователь</th><th>Адрес</th><th style="white-space:nowrap">Агент</th><th style="white-space:nowrap">Last seen</th><th style="white-space:nowrap">Версия</th><th style="white-space:nowrap">Сбор данных</th>
+      <th style="white-space:nowrap" title="NTP-дрейф часов агента относительно эталонного времени. Норма: ±50 мс. При больших значениях временна́я корреляция событий между машинами может быть неточной.">Drift {_TIP_I}</th><th style="white-space:nowrap">Данные</th>
     </tr></thead>
     <tbody>{_agent_rows(agents_data)}</tbody>
   </table>
