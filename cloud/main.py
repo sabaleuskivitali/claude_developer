@@ -968,7 +968,7 @@ def _agent_rows(agents) -> str:
                 f'<span style="background:#fef9c3;color:#854d0e;padding:0 5px;border-radius:4px;'
                 f'font-size:.68rem;font-weight:700;line-height:16px">WAN</span>'
                 f' {wan_ip}</span>')
-        ip_cell = (f'<div style="font-size:.74rem;color:#9ca3af;display:flex;gap:8px;flex-wrap:wrap">'
+        ip_cell = (f'<div style="font-size:.74rem;color:#9ca3af;display:flex;flex-direction:column;gap:4px">'
                    f'{"".join(ip_parts)}</div>' if ip_parts else
                    '<span style="color:#d1d5db;font-size:.82rem">—</span>')
 
@@ -1218,7 +1218,7 @@ def cabinet(request: Request):
     {agent_badge}
   </div>
   <div style="overflow-x:auto">
-  <table style="width:max-content;min-width:100%">
+  <table style="min-width:100%">
     <thead><tr>
       <th style="white-space:nowrap">№</th><th>Машина / Пользователь</th><th>Адрес</th><th style="white-space:nowrap">Агент</th><th style="white-space:nowrap">Last seen</th><th style="white-space:nowrap">Версия</th><th style="white-space:nowrap">Сбор данных</th>
       <th style="white-space:nowrap" title="NTP-дрейф часов агента относительно эталонного времени. Норма: ±50 мс. При больших значениях временна́я корреляция событий между машинами может быть неточной.">Drift {_TIP_I}</th><th style="white-space:nowrap">Данные</th>
