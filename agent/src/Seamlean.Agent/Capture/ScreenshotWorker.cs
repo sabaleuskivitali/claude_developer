@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SkiaSharp;
+using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
 using Seamlean.Agent.Storage;
 
@@ -14,6 +15,7 @@ public sealed class ScreenshotWorker : BackgroundService
     private readonly NtpSynchronizer _ntp;
     private readonly AgentSettings _settings;
     private readonly ILogger<ScreenshotWorker> _logger;
+    private readonly LayerHealthTracker _tracker;
 
     private long _lastDHash;
 
@@ -21,12 +23,14 @@ public sealed class ScreenshotWorker : BackgroundService
         EventStore store,
         NtpSynchronizer ntp,
         IOptions<AgentSettings> options,
-        ILogger<ScreenshotWorker> logger)
+        ILogger<ScreenshotWorker> logger,
+        LayerHealthTracker tracker)
     {
         _store    = store;
         _ntp      = ntp;
         _settings = options.Value;
         _logger   = logger;
+        _tracker  = tracker;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -73,7 +77,11 @@ public sealed class ScreenshotWorker : BackgroundService
     private void CaptureAndStore(string reason)
     {
         using var bitmap = CaptureActiveWindow();
-        if (bitmap is null) return;
+        if (bitmap is null)
+        {
+            _tracker.RecordEvent("visual");
+            return;
+        }
 
         var hash = ComputeDHash(bitmap);
 
