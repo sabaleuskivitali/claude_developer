@@ -194,6 +194,12 @@ MIGRATIONS = [
     WHERE event_type = 'PerformanceSnapshot'
     ORDER BY synced_ts DESC;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS machine_settings (
+        machine_id  TEXT PRIMARY KEY,
+        auto_update BOOLEAN NOT NULL DEFAULT TRUE
+    );
+    """,
 ]
 
 

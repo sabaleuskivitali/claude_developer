@@ -1,98 +1,56 @@
 # WinDiagUpdater.ps1
 # Autonomous updater. Launched by HttpUpdateManager via Scheduled Task (SYSTEM).
 # Runs as SYSTEM outside the agent process — safe to replace the exe.
-# Agent itself runs as a per-user scheduled task (AtLogOn/Interactive), not a Windows Service.
 
 param()
 
-$ServiceName  = "WinDiagSvc"
-$InstallDir   = "C:\Program Files\Windows Diagnostics"
-$StagingDir   = Join-Path $InstallDir "staging"
-$AckDir       = $null   # resolved below from appsettings.json
+$ServiceName = "WinDiagSvc"
+$InstallDir  = "C:\Program Files\Windows Diagnostics"
+$StagingDir  = Join-Path $InstallDir "staging"
 
 function Write-Log { param($Msg) Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Msg" }
 
 Write-Log "WinDiagUpdater started"
 
-# --- Read share path and machine_id from appsettings.json ---
-$settingsPath = Join-Path $InstallDir "appsettings.json"
-if (Test-Path $settingsPath) {
-    $cfg       = Get-Content $settingsPath -Raw | ConvertFrom-Json
-    $sharePath = $cfg.AgentSettings.SharePath
-    $machineId = $cfg.AgentSettings.MachineId
-    if ($sharePath -and $machineId) {
-        $AckDir = Join-Path $sharePath "$machineId\cmd"
-    }
-}
+Start-Sleep -Seconds 3
 
-# --- Stop the agent scheduled task (kills the running process) ---
-Start-Sleep -Seconds 5
-try {
-    $task = Get-ScheduledTask -TaskName $ServiceName -ErrorAction Stop
-    if ($task.State -eq "Running") {
-        Write-Log "Stopping scheduled task $ServiceName..."
-        Stop-ScheduledTask -TaskName $ServiceName
-        Start-Sleep -Seconds 3
-    }
-} catch {
-    Write-Log "Task not running or not found: $_"
-}
-# Also kill any lingering process by name
-Get-Process -Name "Seamlean.Agent" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Stop scheduled task and kill any lingering process
+schtasks /End /TN $ServiceName 2>$null
+Start-Sleep -Seconds 1
+taskkill /F /IM "Seamlean.Agent.exe" 2>$null
+Start-Sleep -Seconds 1
 
-# --- Replace exe ---
+# Verify staged exe exists
 $StagedExe = Join-Path $StagingDir "Seamlean.Agent.exe"
 if (-not (Test-Path $StagedExe)) {
-    Write-Log "ERROR: Seamlean.Agent.exe not found in staging — aborting"
+    Write-Log "ERROR: staged Seamlean.Agent.exe not found — aborting"
+    schtasks /Run /TN $ServiceName 2>$null
     exit 1
 }
 
+# Replace exe
 Write-Log "Copying Seamlean.Agent.exe to $InstallDir"
 try {
     Copy-Item -Path $StagedExe -Destination (Join-Path $InstallDir "Seamlean.Agent.exe") -Force
 } catch {
-    Write-Log "ERROR copying files: $_"
-    # Try to restart old version anyway
-    Start-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+    Write-Log "ERROR copying file: $_"
+    schtasks /Run /TN $ServiceName 2>$null
     exit 1
 }
 
-# --- Re-grant write access on appsettings.json after file replacement ---
+# Re-grant write access on appsettings.json for interactive users
 try {
     icacls "$InstallDir\appsettings.json" /grant "BUILTIN\Users:(M)" | Out-Null
 } catch { }
 
-# --- Start the scheduled task (fires in active user sessions) ---
-Write-Log "Starting scheduled task $ServiceName..."
-try {
-    Start-ScheduledTask -TaskName $ServiceName
-    Write-Log "Task started successfully"
-} catch {
-    Write-Log "ERROR starting task: $_"
-}
-
-# --- Write ack to SMB ---
-if ($AckDir -and (Test-Path $sharePath -ErrorAction SilentlyContinue)) {
-    $ack = @{
-        command_id   = "update"
-        machine_id   = $machineId
-        executed_at  = (Get-Date -Format "o")
-        status       = "ok"
-        message      = "Update completed and task restarted"
-    } | ConvertTo-Json
-    try {
-        if (-not (Test-Path $AckDir)) { New-Item -ItemType Directory -Path $AckDir -Force | Out-Null }
-        $ack | Set-Content -Path (Join-Path $AckDir "ack.json") -Encoding UTF8
-        Write-Log "Ack written to SMB"
-    } catch {
-        Write-Log "Could not write ack: $_"
-    }
-}
-
-# --- Cleanup ---
+# Cleanup staging
 Remove-Item -Path $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
 
-# --- Remove this scheduled task ---
+# Start agent
+Write-Log "Starting scheduled task $ServiceName"
+schtasks /Run /TN $ServiceName 2>$null
+
+# Remove this update task
 schtasks /Delete /TN "WinDiagUpdate" /F 2>$null
 
 Write-Log "WinDiagUpdater completed"

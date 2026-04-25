@@ -39,14 +39,24 @@ public sealed class HttpUpdateManager : BackgroundService
         _logger    = logger;
     }
 
+    private readonly SemaphoreSlim _trigger = new(0, 1);
+
+    public void TriggerUpdate() => _trigger.Release();
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         await CheckForUpdateAsync(ct);
 
         var interval = TimeSpan.FromMinutes(_settings.UpdateCheckIntervalMinutes);
         using var timer = new PeriodicTimer(interval);
-        while (await timer.WaitForNextTickAsync(ct))
+        while (!ct.IsCancellationRequested)
+        {
+            var tickTask    = timer.WaitForNextTickAsync(ct).AsTask();
+            var triggerTask = _trigger.WaitAsync(ct);
+            await Task.WhenAny(tickTask, triggerTask);
+            if (ct.IsCancellationRequested) break;
             await CheckForUpdateAsync(ct);
+        }
     }
 
     private async Task CheckForUpdateAsync(CancellationToken ct)

@@ -82,8 +82,9 @@ builder.Services.AddSingleton<LayerWatchdog>();
 builder.Services.AddHostedService<HttpSyncWorker>();
 builder.Services.AddHostedService<HeartbeatWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LayerWatchdog>());
+builder.Services.AddSingleton<HttpUpdateManager>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<HttpUpdateManager>());
 builder.Services.AddHostedService<HttpCommandPoller>();
-builder.Services.AddHostedService<HttpUpdateManager>();
 builder.Services.AddHostedService<PerformanceMonitor>();
 
 // File logging — no console output in service mode

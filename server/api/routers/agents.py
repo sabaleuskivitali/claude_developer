@@ -1,9 +1,14 @@
 import time
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException, status
+from pydantic import BaseModel
 
 from auth import require_api_key
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
+
+
+class MachineSettingsPatch(BaseModel):
+    auto_update: bool | None = None
 
 _STATUS_ONLINE  = "online"   # heartbeat < 2 min ago
 _STATUS_WARNING = "warning"  # heartbeat 2–15 min ago
@@ -104,3 +109,35 @@ async def list_agents(request: Request):
         })
 
     return {"agents": agents, "count": len(agents)}
+
+
+@router.get("/machines/{machine_id}/settings")
+async def get_machine_settings(machine_id: str, request: Request):
+    row = await request.app.state.db.fetchrow(
+        "SELECT machine_id, auto_update FROM machine_settings WHERE machine_id = $1", machine_id
+    )
+    if row:
+        return {"machine_id": machine_id, "auto_update": row["auto_update"]}
+    return {"machine_id": machine_id, "auto_update": True}
+
+
+@router.patch("/machines/{machine_id}/settings")
+async def patch_machine_settings(machine_id: str, body: MachineSettingsPatch, request: Request):
+    if body.auto_update is None:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    await request.app.state.db.execute(
+        """INSERT INTO machine_settings (machine_id, auto_update) VALUES ($1, $2)
+           ON CONFLICT (machine_id) DO UPDATE SET auto_update = EXCLUDED.auto_update""",
+        machine_id, body.auto_update,
+    )
+    return {"machine_id": machine_id, "auto_update": body.auto_update}
+
+
+@router.post("/machines/{machine_id}/force-update")
+async def force_update_machine(machine_id: str, request: Request):
+    await request.app.state.db.execute(
+        """INSERT INTO commands (machine_id, command, issued_by)
+           VALUES ($1, 'force_update', 'cloud')""",
+        machine_id,
+    )
+    return {"ok": True, "machine_id": machine_id, "command": "force_update"}

@@ -13,3 +13,11 @@ jobs:
     steps:
       - name: Verified stable release
         run: echo "Stable tag ${{ github.ref_name }} — verified by CJM."
+
+      - name: Notify cloud of stable release
+        if: startsWith(github.ref, 'refs/tags/agent/v')
+        run: |
+          curl -sf -X POST https://api.seamlean.com/v1/github/stable \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.CLOUD_WEBHOOK_SECRET }}" \
+            -d "{\"tag\":\"${{ github.ref_name }}\"}"

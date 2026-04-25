@@ -1,7 +1,12 @@
+import asyncio
+import json
 import logging
 import os
+import random
 import shutil
+import ssl
 import time
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
@@ -10,6 +15,15 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import db, storage
+
+_CLOUD_URL          = os.environ.get("CLOUD_URL", "").rstrip("/")
+_CLOUD_SERVER_TOKEN = os.environ.get("CLOUD_SERVER_TOKEN", "")
+_API_KEY            = os.environ.get("API_KEY", "")
+_SERVER_URL         = os.environ.get("SERVER_URL", "")
+
+_ssl_ctx_server = ssl.create_default_context()
+_ssl_ctx_server.check_hostname = False
+_ssl_ctx_server.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
 from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap
@@ -54,6 +68,77 @@ async def _ensure_bootstrap(pool):
         logger.error("_ensure_bootstrap failed: %s", e)
 
 
+def _http_get_json(url: str, token: str = "") -> dict:
+    headers = {"User-Agent": "Seamlean-Server/1.0"}
+    if token:
+        headers["X-Server-Token"] = token
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx_server) as r:
+        return json.loads(r.read())
+
+
+def _http_post_json(url: str, body: dict, token: str = "") -> dict:
+    headers = {"Content-Type": "application/json", "User-Agent": "Seamlean-Server/1.0"}
+    if token:
+        headers["X-Server-Token"] = token
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx_server) as r:
+        return json.loads(r.read())
+
+
+def _current_cached_version() -> str | None:
+    from pathlib import Path as _Path
+    import os as _os
+    pkg_dir = _Path(_os.environ.get("UPDATE_PACKAGES_DIR", "/updates"))
+    lj = pkg_dir / "latest.json"
+    if lj.exists():
+        try:
+            return json.loads(lj.read_text()).get("version")
+        except Exception:
+            pass
+    return None
+
+
+async def _catchup_loop():
+    if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
+        return
+    await asyncio.sleep(random.randint(0, 60))
+    while True:
+        try:
+            data = await asyncio.to_thread(
+                _http_get_json,
+                f"{_CLOUD_URL}/api/v1/cloud/latest-agent",
+                _CLOUD_SERVER_TOKEN,
+            )
+            version = data.get("version")
+            if version and version != _current_cached_version():
+                from routers.updates import _download_and_cache
+                asyncio.create_task(
+                    _download_and_cache(version, data.get("sha256", ""), data.get("exe_url", ""))
+                )
+        except Exception as e:
+            logger.debug("_catchup_loop: %s", e)
+        await asyncio.sleep(86400)
+
+
+async def _heartbeat_loop():
+    if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
+        return
+    version = _read_version()
+    while True:
+        try:
+            await asyncio.to_thread(
+                _http_post_json,
+                f"{_CLOUD_URL}/api/v1/cloud/heartbeat",
+                {"tunnel_url": _SERVER_URL, "api_key": _API_KEY, "version": version},
+                _CLOUD_SERVER_TOKEN,
+            )
+        except Exception as e:
+            logger.debug("_heartbeat_loop: %s", e)
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = await db.create_pool()
@@ -69,7 +154,11 @@ async def lifespan(app: FastAPI):
                 updated_at  BIGINT NOT NULL
             )
         """)
+    catchup_task   = asyncio.create_task(_catchup_loop())
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
     yield
+    catchup_task.cancel()
+    heartbeat_task.cancel()
     await app.state.event_queue.stop()
     await app.state.db.close()
 

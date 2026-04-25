@@ -17,11 +17,12 @@ namespace Seamlean.Agent.Management;
 /// </summary>
 public sealed class HttpCommandPoller : BackgroundService
 {
-    private readonly EventStore      _store;
-    private readonly NtpSynchronizer _ntp;
-    private readonly ServerDiscovery _discovery;
-    private readonly AgentSettings   _settings;
-    private readonly LayerWatchdog   _watchdog;
+    private readonly EventStore        _store;
+    private readonly NtpSynchronizer  _ntp;
+    private readonly ServerDiscovery  _discovery;
+    private readonly AgentSettings    _settings;
+    private readonly LayerWatchdog    _watchdog;
+    private readonly HttpUpdateManager _updateManager;
     private readonly ILogger<HttpCommandPoller> _logger;
 
     private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -32,15 +33,17 @@ public sealed class HttpCommandPoller : BackgroundService
         NtpSynchronizer ntp,
         ServerDiscovery discovery,
         LayerWatchdog watchdog,
+        HttpUpdateManager updateManager,
         IOptions<AgentSettings> options,
         ILogger<HttpCommandPoller> logger)
     {
-        _store     = store;
-        _ntp       = ntp;
-        _discovery = discovery;
-        _watchdog  = watchdog;
-        _settings  = options.Value;
-        _logger    = logger;
+        _store         = store;
+        _ntp           = ntp;
+        _discovery     = discovery;
+        _watchdog      = watchdog;
+        _updateManager = updateManager;
+        _settings      = options.Value;
+        _logger        = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -113,6 +116,7 @@ public sealed class HttpCommandPoller : BackgroundService
         {
             return cmd.Command switch
             {
+                "force_update"  => ForceUpdate(),
                 "restart"       => RestartViaWatchdog("remote_command"),
                 "restart_agent" => RestartViaWatchdog("remote_command"),
                 "restart_layer" when cmd.Params != null
@@ -132,6 +136,12 @@ public sealed class HttpCommandPoller : BackgroundService
         {
             return ("error", ex.Message[..Math.Min(ex.Message.Length, 200)]);
         }
+    }
+
+    private (string, string) ForceUpdate()
+    {
+        _updateManager.TriggerUpdate();
+        return ("ok", "Update check triggered");
     }
 
     private (string, string) RestartViaWatchdog(string reason)

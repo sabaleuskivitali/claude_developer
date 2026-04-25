@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import concurrent.futures
 import datetime
 import hashlib
 import hmac
@@ -19,6 +21,8 @@ _CF_DNS_TOKEN          = os.environ.get("CF_DNS_TOKEN", "")
 _CF_ZONE_ID            = os.environ.get("CF_ZONE_ID", "")
 _CF_BASE               = "https://api.cloudflare.com/client/v4"
 _GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+_CLOUD_WEBHOOK_SECRET  = os.environ.get("CLOUD_WEBHOOK_SECRET", "") or _GITHUB_WEBHOOK_SECRET
+_GITHUB_TOKEN          = os.environ.get("GITHUB_TOKEN", "")
 _CLOUD_VERSION         = Path("/app/VERSION").read_text().strip() if Path("/app/VERSION").exists() else "unknown"
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -63,6 +67,12 @@ def init_db():
         max_uses    INTEGER DEFAULT 999,
         used_count  INTEGER DEFAULT 0,
         rate_limit  INTEGER DEFAULT 10
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS agent_releases (
+        version     TEXT PRIMARY KEY,
+        sha256      TEXT NOT NULL,
+        exe_url     TEXT NOT NULL,
+        released_at TEXT NOT NULL
     )""")
     conn.commit()
     # migrate: add install_token if column missing
@@ -677,7 +687,13 @@ async def register_server(request: Request):
         )
         conn.commit()
         conn.close()
-        return {"ok": True, "api_key": api_key, "tunnel_token": tunnel_token, "tunnel_url": cf_url}
+        return {
+            "ok": True,
+            "api_key": api_key,
+            "tunnel_token": tunnel_token,
+            "tunnel_url": cf_url,
+            "server_token": install_token,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -892,6 +908,17 @@ def _agent_rows(agents) -> str:
     if not agents:
         return ('<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:20px">'
                 'Агентов нет. Установите первого с помощью команды выше.</td></tr>')
+    latest_ver      = _config_get("latest_agent_version") or ""
+    latest_released = _config_get("latest_agent_released_at") or ""
+    if latest_released:
+        try:
+            dt = datetime.datetime.fromisoformat(latest_released.rstrip("Z"))
+            latest_released_s = dt.strftime("%-d %b %Y")
+        except Exception:
+            latest_released_s = latest_released[:10]
+    else:
+        latest_released_s = ""
+    latest_tip = (f"Последняя stable: v{latest_ver} · {latest_released_s}" if latest_ver else "")
     rows = ""
     for i, a in enumerate(agents):
         lag    = a.get("lag_sec", 0)
@@ -944,11 +971,31 @@ def _agent_rows(agents) -> str:
         ip_line = (f'<div style="font-size:.74rem;color:#9ca3af;margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">'
                    f'{"".join(ip_parts)}</div>' if ip_parts else "")
 
+        machine_id  = a.get("machine_id", "")
+        srv_url     = a.get("_server_url", "")
+        srv_api_key = a.get("_api_key", "")
+        is_outdated = latest_ver and ver not in ("—", "") and ver != latest_ver
+        ver_color   = "#dc2626" if is_outdated else "#6b7280"
+        ver_tip     = latest_tip if is_outdated else (latest_tip or "")
+        if srv_url and machine_id:
+            upd_btn = (
+                f'<button onclick="forceUpdate(event,\'{srv_url}\',\'{srv_api_key}\',\'{machine_id}\')" '
+                f'title="{ver_tip or "Обновить сейчас"}" '
+                f'style="margin-left:6px;background:none;border:1px solid #d1d5db;border-radius:4px;'
+                f'padding:1px 5px;cursor:pointer;font-size:.74rem;color:#4f46e5">↑</button>'
+            )
+        else:
+            upd_btn = ""
+        ver_cell = (
+            f'<span style="color:{ver_color};font-size:.82rem" title="{ver_tip}">{ver}</span>'
+            f'{upd_btn}'
+        )
+
         rows += f"""<tr style="cursor:pointer" onclick="toggleLayer('{rid}')">
           <td style="font-size:.84rem">{host}{user_line}{ip_line}</td>
           <td>{badge}</td>
           <td style="color:#6b7280;font-size:.82rem">{last} назад</td>
-          <td style="color:#6b7280;font-size:.82rem">{ver}</td>
+          <td>{ver_cell}</td>
           <td>{_collection_badge(stats, is_offline)}</td>
           <td>{drift_s}</td>
           <td>{data_s}</td>
@@ -986,7 +1033,11 @@ def _build_server_card(srv: dict) -> tuple[str, list]:
     agents_data: list = []
     if tunnel_url:
         health      = _api(tunnel_url, api_key, "/health")
-        agents_data = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+        raw_agents  = (_api(tunnel_url, api_key, "/api/v1/agents") or {}).get("agents", [])
+        for a in raw_agents:
+            a["_server_url"] = tunnel_url
+            a["_api_key"]    = api_key
+        agents_data = raw_agents
     else:
         health = None
 
@@ -1168,6 +1219,15 @@ def cabinet(request: Request):
 function toggleLayer(id) {{
   var row = document.getElementById('layer-' + id);
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}}
+function forceUpdate(e, srvUrl, apiKey, machineId) {{
+  e.stopPropagation();
+  if (!confirm('Отправить команду обновления агенту ' + machineId + '?')) return;
+  fetch(srvUrl + '/api/v1/machines/' + machineId + '/force-update', {{
+    method: 'POST',
+    headers: {{'X-Api-Key': apiKey, 'Content-Type': 'application/json'}}
+  }}).then(r => r.json()).then(d => alert(d.ok ? 'Команда отправлена' : 'Ошибка: ' + JSON.stringify(d)))
+     .catch(err => alert('Ошибка: ' + err));
 }}
 </script>
 {add_server_card}"""
@@ -1435,6 +1495,178 @@ async def github_release_webhook(request: Request):
             return {"ok": True, "tag": tag, "url": url}
 
     return JSONResponse(status_code=422, content={"error": "Seamlean.Agent.exe not found in release assets"})
+
+
+# ── Stable-tag webhook (called by CI after -stable tag push) ──────────────────
+
+def _fetch_latest_json_from_github(tag: str) -> dict | None:
+    """Download latest.json from the GitHub Release for the given tag."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Seamlean-Cloud/1.0"}
+    if _GITHUB_TOKEN:
+        headers["Authorization"] = f"token {_GITHUB_TOKEN}"
+    tag_enc = tag.replace("/", "%2F")
+    url = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/tags/{tag_enc}"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as r:
+            release = json.loads(r.read())
+        for asset in release.get("assets", []):
+            if asset["name"] == "latest.json":
+                asset_url = asset["url"]
+                dl_headers = dict(headers)
+                dl_headers["Accept"] = "application/octet-stream"
+                req2 = urllib.request.Request(asset_url, headers=dl_headers)
+                with urllib.request.urlopen(req2, timeout=10, context=_ssl_ctx) as r2:
+                    return json.loads(r2.read())
+    except Exception as e:
+        print(f"WARN: _fetch_latest_json_from_github({tag}): {e}", flush=True)
+    return None
+
+
+def _store_agent_release(version: str, sha256: str, exe_url: str, released_at: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_releases (version, sha256, exe_url, released_at) VALUES (?,?,?,?)",
+        (version, sha256, exe_url, released_at),
+    )
+    conn.commit()
+    conn.close()
+    _config_set("latest_agent_version", version)
+    _config_set("latest_agent_sha256", sha256)
+    _config_set("agent_download_url", exe_url)
+    _config_set("latest_agent_url", exe_url)
+    _config_set("latest_agent_released_at", released_at)
+    _agent_url_cache["url"] = exe_url
+    _agent_url_cache["ts"] = time.time()
+
+
+def _post_notify_server(tunnel_url: str, version: str, sha256: str, exe_url: str):
+    try:
+        body = json.dumps({"version": version, "sha256": sha256, "exe_url": exe_url}).encode()
+        req = urllib.request.Request(
+            f"{tunnel_url}/api/v1/updates/notify",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as r:
+            r.read()
+    except Exception as e:
+        print(f"WARN: notify {tunnel_url}: {e}", flush=True)
+
+
+async def _notify_all_servers(version: str, sha256: str, exe_url: str):
+    conn = sqlite3.connect(DB_PATH)
+    servers = conn.execute("SELECT tunnel_url FROM servers WHERE tunnel_url IS NOT NULL").fetchall()
+    conn.close()
+    loop = asyncio.get_event_loop()
+    pool = concurrent.futures.ThreadPoolExecutor()
+    tasks = [
+        loop.run_in_executor(pool, _post_notify_server, row[0], version, sha256, exe_url)
+        for row in servers if row[0]
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@app.post("/v1/github/stable")
+async def stable_tag_webhook(request: Request):
+    body = await request.body()
+
+    if _CLOUD_WEBHOOK_SECRET:
+        secret_header = request.headers.get("X-Webhook-Secret", "")
+        if not hmac.compare_digest(secret_header, _CLOUD_WEBHOOK_SECRET):
+            return JSONResponse(status_code=401, content={"error": "Invalid secret"})
+
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    tag = payload.get("tag", "")
+    if not tag.startswith("agent/v"):
+        return {"ok": True, "skipped": True, "reason": "not an agent tag"}
+
+    manifest = _fetch_latest_json_from_github(tag)
+    if not manifest:
+        return JSONResponse(status_code=422, content={"error": "latest.json not found in release"})
+
+    version     = manifest.get("version", tag.removeprefix("agent/v"))
+    sha256      = manifest.get("sha256", "")
+    exe_url     = manifest.get("exe_url", "")
+    released_at = manifest.get("released_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
+
+    if not sha256 or not exe_url:
+        return JSONResponse(status_code=422, content={"error": "latest.json missing sha256 or exe_url"})
+
+    _store_agent_release(version, sha256, exe_url, released_at)
+    asyncio.create_task(_notify_all_servers(version, sha256, exe_url))
+    return {"ok": True, "version": version, "sha256": sha256}
+
+
+# ── Cloud API for servers (auth by X-Server-Token) ────────────────────────────
+
+def _server_by_token(token: str) -> dict | None:
+    if not token:
+        return None
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT id, user_id, tunnel_url, api_key FROM servers WHERE server_token=?", (token,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "user_id": row[1], "tunnel_url": row[2], "api_key": row[3]}
+
+
+@app.get("/api/v1/cloud/latest-agent")
+def cloud_latest_agent(request: Request):
+    token = request.headers.get("X-Server-Token", "")
+    if not _server_by_token(token):
+        return JSONResponse(status_code=401, content={"error": "Invalid server token"})
+    version = _config_get("latest_agent_version")
+    sha256  = _config_get("latest_agent_sha256")
+    exe_url = _config_get("agent_download_url")
+    if not version:
+        # fallback: try agent_releases table
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute(
+            "SELECT version, sha256, exe_url FROM agent_releases ORDER BY released_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row:
+            version, sha256, exe_url = row
+    if not version:
+        return JSONResponse(status_code=404, content={"error": "No release available"})
+    return {"version": version, "sha256": sha256, "exe_url": exe_url}
+
+
+@app.post("/api/v1/cloud/heartbeat")
+async def cloud_server_heartbeat(request: Request):
+    token = request.headers.get("X-Server-Token", "")
+    srv = _server_by_token(token)
+    if not srv:
+        return JSONResponse(status_code=401, content={"error": "Invalid server token"})
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    tunnel_url = data.get("tunnel_url", "")
+    api_key    = data.get("api_key", "")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    if tunnel_url and api_key:
+        conn.execute(
+            "UPDATE servers SET tunnel_url=?, api_key=?, heartbeat_at=? WHERE server_token=?",
+            (tunnel_url, api_key, now, token),
+        )
+    else:
+        conn.execute(
+            "UPDATE servers SET heartbeat_at=? WHERE server_token=?", (now, token)
+        )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 # ── Bootstrap proxy (hides server URL from agent install command) ─────────────
