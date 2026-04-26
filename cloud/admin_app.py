@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -1301,7 +1302,6 @@ def server_detail(server_token: str):
     info = _server_info(server_token)
 
     # Group batches by component
-    from collections import defaultdict
     by_comp: dict = defaultdict(list)
     for b in batches:
         by_comp[b["component"] or "unknown"].append(dict(b))
@@ -1377,15 +1377,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (first) first.click();
 });
 </script>"""
-    return HTMLResponse(
-        f"<!doctype html><html><head><title>Сервер {srv_name}</title>{_CSS}</head>"
-        f"<body><div class='wrap'>"
-        + _page.__wrapped_nav__(srv_name)
-        + body
-        + f"</div>{_JS}{layer_js}</body></html>"
-        if hasattr(_page, "__wrapped_nav__") else
-        _page(f"Сервер {srv_name}", body + layer_js).body.decode()
-    )
+    return _page(f"Сервер {srv_name}", body + layer_js)
 
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
