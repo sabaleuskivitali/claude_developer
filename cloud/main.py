@@ -809,15 +809,12 @@ def _collection_badge(stats: dict, is_offline: bool = False) -> str:
 
 
 def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> str:
-    has_1h = any(v.get("events_1h") is not None for v in stats.values())
-
     header = '<tr style="border-bottom:1px solid #e5e7eb">'
     header += '<th style="padding:3px 14px 3px 0;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:left">СЛОЙ</th>'
     header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">5 МИН</th>'
-    if has_1h:
-        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">1 ЧАС</th>'
-        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">24Ч</th>'
-        header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">ВСЁ ВРЕМЯ</th>'
+    header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">1 ЧАС</th>'
+    header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">24Ч</th>'
+    header += '<th style="padding:3px 10px;color:#9ca3af;font-size:.7rem;font-weight:600;text-align:right">ВСЁ ВРЕМЯ</th>'
     header += '</tr>'
 
     def _c(n, err=0):
@@ -869,26 +866,24 @@ def _layers_detail_row(row_id: str, stats: dict, is_offline: bool = False) -> st
         row = (f'<tr>'
                f'<td style="padding:3px 14px 3px 0;white-space:nowrap">'
                f'<span style="color:{col};font-size:.8rem">{icon} {label}</span>{err_badge}</td>'
-               f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5_cell}</td>')
-        if has_1h:
-            row += (f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h, err1h)}</td>'
-                    f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c24(e24h, err24h)}</td>'
-                    f'<td style="padding:3px 10px;text-align:right;color:#6b7280;font-size:.8rem">'
-                    f'{"—" if etotal is None else etotal}</td>')
-        row += '</tr>'
+               f'<td style="padding:3px 10px;text-align:right;color:#374151;font-size:.8rem">{e5_cell}</td>'
+               f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c(e1h, err1h)}</td>'
+               f'<td style="padding:3px 10px;text-align:right;font-size:.8rem">{_c24(e24h, err24h)}</td>'
+               f'<td style="padding:3px 10px;text-align:right;color:#6b7280;font-size:.8rem">'
+               f'{"—" if etotal is None else etotal}</td>'
+               f'</tr>')
         data_rows += row
 
     t5s  = '—' if is_offline else total_5min
-    t24s = '—' if total_24h  == 0 else total_24h
+    t1s  = '—' if is_offline else total_1h
+    t24s = '—' if total_24h == 0 else total_24h
     total_row = (f'<tr style="border-top:1px solid #e5e7eb;font-weight:600">'
                  f'<td style="padding:4px 14px 4px 0;color:#374151;font-size:.8rem">Итого</td>'
-                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t5s}</td>')
-    if has_1h:
-        t1s = '—' if is_offline else total_1h
-        total_row += (f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t1s}</td>'
-                      f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t24s}</td>'
-                      f'<td style="padding:4px 10px;text-align:right;color:#6b7280;font-size:.8rem">{total_total}</td>')
-    total_row += '</tr>'
+                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t5s}</td>'
+                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t1s}</td>'
+                 f'<td style="padding:4px 10px;text-align:right;font-size:.8rem">{t24s}</td>'
+                 f'<td style="padding:4px 10px;text-align:right;color:#6b7280;font-size:.8rem">{total_total}</td>'
+                 f'</tr>')
 
     inner = (f'<table style="border-collapse:collapse;border:0">'
              f'{header}{data_rows}{total_row}</table>')
