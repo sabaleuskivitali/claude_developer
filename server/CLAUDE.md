@@ -3,6 +3,10 @@
 > **НАЗВАНИЕ СЕССИИ:** всегда начинай с `server: ` — например `server: Add analytics worker`
 > Используй `/rename server: [описание]` в начале каждой сессии.
 
+> **РЕЛИЗ:** если пользователь написал «релизь» (с аргументом или без) — немедленно выполни:
+> `~/Applications/Claude/Dev/release server "[аргумент если есть]"`
+> Никаких git команд вручную. Только через этот скрипт.
+
 
 > Ты работаешь ТОЛЬКО в папке `server/`. Не трогай `agent/` и `cloud/`.
 > Корневой CLAUDE.md содержит общие правила проекта (git, версионирование, no hardcode).
@@ -31,20 +35,33 @@ server/
 
 ---
 
-## Два процесса (один Docker образ, два контейнера)
+## Контейнеры (docker-compose.yml)
 
 ```yaml
 services:
-  api:      uvicorn api.main:app --host 0.0.0.0 --port 49200
-  worker:   python -m analytics.main
+  api:      uvicorn api.main:app  — HTTP приём событий от агентов
+  worker:   sleep infinity         — analytics worker, запускается через ofelia
+  ofelia:   mcuadros/ofelia        — cron планировщик через docker exec
   postgres: PostgreSQL 16
-  minio:    MinIO (скриншоты)
-  cloudflared: CF Tunnel → srv-XXX.seamlean.com
-  nginx:    :443 → :49200, :49100 (discovery)
+  minio:    MinIO (скриншоты WebP)
+  nginx:    :443 → :49200
 ```
 
 **api** — тонкий HTTP слой, только приём и отдача данных, < 100ms response.
-**worker** — тяжёлая аналитика, может работать секунды и минуты.
+**worker** — `sleep infinity`; pipeline запускается Ofelia через `docker exec` по расписанию.
+Так worker всегда доступен для `docker exec` и не падает от OOM при будущих PaddleOCR/YOLO.
+
+**Расписание Ofelia:**
+- `0 */2 * * *` — `run_pipeline.py vision` (каждые 2 часа)
+- `30 */2 * * *` — `run_pipeline.py reconstruct` (через 30 мин после vision)
+- `0 3 * * *` — `run_pipeline.py fte` (ночной FTE отчёт)
+
+**Запустить pipeline вручную:**
+```bash
+docker compose exec worker python run_pipeline.py all
+docker compose exec worker python run_pipeline.py vision --batch-size 5
+docker compose exec worker python run_pipeline.py reconstruct --lookback-hours 72
+```
 
 ---
 
@@ -81,38 +98,26 @@ GET  /api/v1/bootstrap/active    ← bootstrap profile для агентов
 
 ---
 
-## Пайплайн аналитики (worker)
+## Пайплайн аналитики (analytics/)
 
 ```
-Stage 1: Import
-  Агент → POST /api/v1/events → PostgreSQL (events table)
-  Агент → POST /api/v1/screenshots → MinIO
+vision_worker.py     — Claude Vision API, батч 20 скриншотов
+                       dHash фильтр дублей → MinIO → Claude API → vision_results
+                       → materialize в events.vision_*
 
-Stage 2: OCR
-  Скриншот из MinIO → PaddleOCR → текст + bbox → ocr_results table
+task_reconstructor.py — сегментация vision-событий в task_sessions
+                        граница = commit+idle/gap>3min, или gap>15min, или смена сессии
+                        case_id scoring: vision(10) > regex(7) > MRU(4)
 
-Stage 3: UI Detection
-  Скриншот → YOLOv8 → UI элементы → ui_elements table
+fte_builder.py       — агрегация task_sessions → fte_report
+                        automation_score (min-max по всем задачам)
+                        FTE stays on-prem (privacy)
 
-Stage 4: Screen Diff
-  Сравнение последовательных скриншотов → delta → что изменилось
-
-Stage 5: Vision LLM (главный)
-  Скриншот + контекст → Claude API (батч 20) → task_label, app_context, action
-  Результат → vision_results table
-
-Stage 6: Event Extraction
-  События + Vision результаты → Python rules + LLM → structured events
-
-Stage 7: Validation
-  Dedup, merge, case_id repair, confidence recalculation
-
-Stage 8: Process Mining
-  pm4py discovery → process graph → BPMN
-  Conformance checking → отклонения от нормы
+run_pipeline.py      — координатор: vision / reconstruct / fte / all
 ```
 
-**MVP**: Stages 1 + 5 (Import + Vision LLM). Остальные добавляются итерационно.
+**MVP реализован**: Vision + task reconstruction + FTE.
+**Бэклог**: OCR (PaddleOCR), UI Detection (YOLOv8), Process Mining (pm4py).
 
 ---
 
@@ -182,26 +187,23 @@ Heartbeat формат → cloud dashboard
 ## Что сейчас в бэклоге для сервера
 
 ```
-Приоритет 1: Analytics Worker (базовый)
-  Task Miner: группировка событий в задачи по сессии
-  LLM Processor: Claude API батч скриншотов → task_label
-  PostgreSQL queue: events WHERE processed=false
-
-Приоритет 2: Policy Endpoint
+Приоритет 1: Policy Endpoint
   GET /api/v1/policy/{machine_id}
   Возвращает: {app_whitelist, domain_whitelist, never_collect}
   Хранится в PostgreSQL, редактируется через cloud cabinet
 
-Приоритет 3: Process Builder
-  pm4py на данных task mining
-  Граф процессов → PostgreSQL
+Приоритет 2: OCR + UI Detection (analytics/)
+  stage2_ocr.py       — PaddleOCR (офлайн, bbox + confidence)
+  stage3_ui.py        — YOLOv8 UI элементы
+  Two-tier Vision: OCR+YOLO confidence >= 0.75 → без Claude API (~70% скриншотов)
 
-Приоритет 4: Confidence Scorer
-  Оценка паттернов по частоте + подтверждениям
+Приоритет 3: Process Mining
+  pm4py discovery → process graph → BPMN
+  Conformance checking → отклонения от нормы
 
-Приоритет 5: Chat/Notification
-  Telegram Bot интеграция
-  Уведомления сотруднику о задачах-кандидатах
+Приоритет 4: FTE API для cloud cabinet
+  GET /api/v1/fte/{server_id} → агрегированные данные fte_report
+  Cloud показывает FTE таблицу клиенту, raw данные остаются on-prem
 ```
 
 ---

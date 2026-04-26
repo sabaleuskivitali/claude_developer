@@ -14,7 +14,6 @@ Usage:
   python manage.py ack <machine_id>
   python manage.py update-config <machine_id> --set KEY=VALUE
   python manage.py perf [<machine_id>] [--warnings]
-  python manage.py etl
   python manage.py deploy
 """
 
@@ -366,17 +365,6 @@ def cmd_perf(args):
         )
 
 
-# ── etl ───────────────────────────────────────────────────────────────────────
-
-def cmd_etl(_args):
-    import subprocess
-    result = subprocess.run(
-        ["docker", "compose", "exec", "etl", "python", "/app/etl/load_events.py"],
-        cwd=pathlib.Path(__file__).parent,
-    )
-    sys.exit(result.returncode)
-
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
@@ -571,9 +559,6 @@ def main():
     p.add_argument("machine_id", nargs="?")
     p.add_argument("--warnings", action="store_true")
 
-    # etl
-    sub.add_parser("etl")
-
     # deploy
     sub.add_parser("deploy")
 
@@ -603,7 +588,6 @@ def main():
         "ack":            cmd_ack,
         "update-config":  cmd_update_config,
         "perf":           cmd_perf,
-        "etl":            cmd_etl,
         "bootstrap":      cmd_bootstrap,
         "deploy":         cmd_deploy,
     }[args.cmd](args)

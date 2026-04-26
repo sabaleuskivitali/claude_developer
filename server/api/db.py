@@ -200,31 +200,74 @@ MIGRATIONS = [
         auto_update BOOLEAN NOT NULL DEFAULT TRUE
     );
     """,
-    # admin_state: key-value store for server-side admin metadata (watermarks, config)
+    # Vision pipeline: per-run results with full history
     """
-    CREATE TABLE IF NOT EXISTS admin_state (
-        key        TEXT PRIMARY KEY,
-        value      TEXT NOT NULL,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS vision_results (
+        id                BIGSERIAL PRIMARY KEY,
+        event_id          TEXT NOT NULL,
+        run_id            UUID NOT NULL,
+        model             TEXT NOT NULL,
+        prompt_version    TEXT NOT NULL,
+        reasoning         TEXT,
+        task_label        TEXT,
+        app_context       TEXT,
+        action_type       TEXT,
+        visible_fields    TEXT[],
+        case_id_candidate TEXT,
+        completion_signal BOOLEAN,
+        cognitive_demand  TEXT,
+        automation_notes  TEXT,
+        confidence        FLOAT,
+        processed_at      TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (event_id, run_id)
     );
+    CREATE INDEX IF NOT EXISTS idx_vr_event_conf
+        ON vision_results (event_id, confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_vr_run
+        ON vision_results (run_id, processed_at);
     """,
-    # LISTEN/NOTIFY: fire 'layer_error' channel on every LayerError INSERT
-    # cloud-admin listens on this channel via the server's heartbeat extension
-    # and pushes errors to cloud immediately instead of waiting for next heartbeat
+    # Task sessions and FTE report
     """
-    CREATE OR REPLACE FUNCTION _notify_layer_error() RETURNS trigger LANGUAGE plpgsql AS $$
-    BEGIN
-        IF NEW.event_type = 'LayerError' THEN
-            PERFORM pg_notify('layer_error', NEW.id::TEXT);
-        END IF;
-        RETURN NEW;
-    END;
-    $$;
+    CREATE TABLE IF NOT EXISTS task_sessions (
+        session_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id              TEXT NOT NULL,
+        machine_id           TEXT NOT NULL,
+        task_label           TEXT NOT NULL,
+        start_ts             BIGINT NOT NULL,
+        end_ts               BIGINT NOT NULL,
+        duration_min         FLOAT NOT NULL,
+        screenshot_count     INT NOT NULL DEFAULT 0,
+        event_count          INT NOT NULL DEFAULT 0,
+        case_id              TEXT,
+        case_id_candidates   JSONB,
+        process_names        TEXT[],
+        has_undo             BOOLEAN DEFAULT FALSE,
+        has_error            BOOLEAN DEFAULT FALSE,
+        event_sequence       TEXT,
+        avg_cognitive_demand TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ts_user_machine
+        ON task_sessions (user_id, machine_id, start_ts);
+    CREATE INDEX IF NOT EXISTS idx_ts_label
+        ON task_sessions (task_label, start_ts);
 
-    DROP TRIGGER IF EXISTS trg_layer_error_notify ON events;
-    CREATE TRIGGER trg_layer_error_notify
-        AFTER INSERT ON events
-        FOR EACH ROW EXECUTE FUNCTION _notify_layer_error();
+    CREATE TABLE IF NOT EXISTS fte_report (
+        id                   BIGSERIAL PRIMARY KEY,
+        report_date          DATE NOT NULL DEFAULT CURRENT_DATE,
+        user_id              TEXT NOT NULL,
+        machine_id           TEXT NOT NULL,
+        task_label           TEXT NOT NULL,
+        executions_per_day   FLOAT NOT NULL,
+        avg_duration_min     FLOAT NOT NULL,
+        pct_workday          FLOAT NOT NULL,
+        repeatability        FLOAT NOT NULL,
+        exception_rate       FLOAT NOT NULL,
+        automation_score     FLOAT NOT NULL,
+        automation_type      TEXT NOT NULL,
+        fte_saving           FLOAT NOT NULL,
+        avg_cognitive_demand TEXT NOT NULL,
+        UNIQUE (report_date, user_id, machine_id, task_label)
+    );
     """,
 ]
 
