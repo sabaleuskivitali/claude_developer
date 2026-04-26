@@ -81,13 +81,20 @@ public sealed class EventStore : IDisposable
                 document_name    TEXT,
                 sent             INTEGER NOT NULL DEFAULT 0,
                 sent_at          INTEGER,
+                screenshot_sent  INTEGER NOT NULL DEFAULT 0,
                 payload          TEXT    NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_unsent  ON events (sent, timestamp_utc);
             CREATE INDEX IF NOT EXISTS idx_session ON events (session_id, sequence_idx);
             CREATE INDEX IF NOT EXISTS idx_case    ON events (case_id) WHERE case_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_screenshots_unsent
+                ON events (screenshot_sent, layer) WHERE layer = 'visual';
             """);
+
+        // Migration for existing databases that don't have screenshot_sent yet
+        try { _conn.Execute("ALTER TABLE events ADD COLUMN screenshot_sent INTEGER NOT NULL DEFAULT 0"); }
+        catch { /* column already exists */ }
     }
 
     public void Insert(ActivityEvent ev)
@@ -182,6 +189,27 @@ public sealed class EventStore : IDisposable
                 new { S = status, At = now });
     }
 
+    public List<ScreenshotPending> GetUnsentScreenshots(int limit)
+    {
+        lock (_writeLock)
+            return _conn.Query<ScreenshotPending>(
+                """
+                SELECT event_id AS EventId, screenshot_path AS ScreenshotPath FROM events
+                WHERE layer = 'visual' AND screenshot_path IS NOT NULL AND screenshot_sent = 0
+                ORDER BY timestamp_utc
+                LIMIT @Limit
+                """,
+                new { Limit = limit }).ToList();
+    }
+
+    public void MarkScreenshotSent(string eventId, int status)
+    {
+        lock (_writeLock)
+            _conn.Execute(
+                "UPDATE events SET screenshot_sent = @S WHERE event_id = @Id",
+                new { S = status, Id = eventId });
+    }
+
     public int CountPending()
     {
         lock (_writeLock)
@@ -222,3 +250,5 @@ public sealed class EventStore : IDisposable
         _conn.Dispose();
     }
 }
+
+public sealed record ScreenshotPending(string EventId, string ScreenshotPath);

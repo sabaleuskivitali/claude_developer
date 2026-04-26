@@ -80,6 +80,7 @@ builder.Services.AddSingleton<ServerDiscovery>();
 builder.Services.AddSingleton<ErrorReporter>();
 builder.Services.AddSingleton<LayerWatchdog>();
 builder.Services.AddHostedService<HttpSyncWorker>();
+builder.Services.AddHostedService<ScreenshotSyncWorker>();
 builder.Services.AddHostedService<HeartbeatWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LayerWatchdog>());
 builder.Services.AddSingleton<HttpUpdateManager>();

@@ -1,6 +1,5 @@
 using System.Net.Http;
 using System.Net.Http.Json;
-using Seamlean.Agent.Capture;
 using Seamlean.Agent.Management;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -80,10 +79,6 @@ public sealed class HttpSyncWorker : BackgroundService
             var events = _store.ReadPending(BatchSize);
             if (events.Count == 0) break;
 
-            // Upload screenshots before sending events (so path is valid on server)
-            foreach (var ev in events)
-                await UploadScreenshotAsync(url, ev, ct);
-
             var ok = await PostEventBatchAsync(url, events, ct);
             if (ok)
             {
@@ -128,40 +123,6 @@ public sealed class HttpSyncWorker : BackgroundService
             _logger.LogWarning("PostEvents failed: {Msg}", ex.Message);
             _errors.Report("http_sync_events", ex.Message);
             return false;
-        }
-    }
-
-    private async Task UploadScreenshotAsync(string url, ActivityEvent ev, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(ev.ScreenshotPath)) return;
-
-        try
-        {
-            // screenshot_path is relative: "{YYYYMMDD}\{event_id}.webp"
-            var parts = ev.ScreenshotPath.Replace('\\', '/').Split('/');
-            if (parts.Length < 2) return;
-
-            var date    = parts[0];
-            var eventId = Path.GetFileNameWithoutExtension(parts[1]);
-            var local   = Path.Combine(_settings.ExpandedScreenshotDir, ev.ScreenshotPath);
-
-            if (!File.Exists(local)) return;
-
-            using var stream  = File.OpenRead(local);
-            using var content = new StreamContent(stream);
-            content.Headers.ContentType = new("image/webp");
-
-            var endpoint = $"{url}/api/v1/screenshots/{_settings.MachineId}/{date}/{eventId}";
-            using var req = new HttpRequestMessage(HttpMethod.Put, endpoint);
-            req.Headers.Add("X-Api-Key", _settings.ApiKey);
-            req.Content = content;
-
-            using var resp = await _discovery.HttpClient.SendAsync(req, ct);
-            resp.EnsureSuccessStatusCode();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug("Screenshot upload skipped for {Id}: {Msg}", ev.EventId, ex.Message);
         }
     }
 
