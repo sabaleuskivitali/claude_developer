@@ -1965,6 +1965,11 @@ def _ingest_errors(server_token: str, errors: list, docker_errors: list) -> None
     try:
         for err in errors:
             payload_d = err.get("payload") or {}
+            if isinstance(payload_d, str):
+                try:
+                    payload_d = json.loads(payload_d)
+                except Exception:
+                    payload_d = {}
             raw = (err.get("raw_message") or
                    err.get("element_name") or
                    payload_d.get("exception_message") or

@@ -145,7 +145,8 @@ async def _fetch_pending_errors(pool, limit: int = 100) -> list[dict]:
             "element_name": r["element_name"],
             "raw_message": r["raw_message"],
             "loaded_at": r["loaded_at"].isoformat() if r["loaded_at"] else None,
-            "payload": r["payload"] if isinstance(r["payload"], dict) else {},
+            "payload": (r["payload"] if isinstance(r["payload"], dict)
+                        else (json.loads(r["payload"]) if r["payload"] else {})),
         }
         for r in rows
     ]
