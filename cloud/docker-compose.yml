@@ -7,6 +7,14 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    volumes:
+      - ./data:/app/data   # shared: reads admin.db + users.db written by api
+    restart: unless-stopped
+
   nginx:
     image: nginx:alpine
     ports:
@@ -16,6 +24,7 @@ services:
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - api
+      - admin
     restart: unless-stopped
 
   cloudflared:
