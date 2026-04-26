@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -215,7 +216,7 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
             log.info("no vision-processed events to reconstruct")
             return 0
 
-        session_ids = list({r["session_id"] for r in visual_rows})
+        session_ids = list({str(r["session_id"]) for r in visual_rows})
 
         # All events for these sessions (for metadata + case_id window)
         all_rows = await conn.fetch(
@@ -247,19 +248,19 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
         # Build in-memory indexes
         session_events: dict[str, list[dict]] = {}
         for r in all_rows:
-            sid = r["session_id"]
+            sid = str(r["session_id"])
             session_events.setdefault(sid, []).append(dict(r))
 
         idle_ts: dict[str, list[int]] = {}
         for r in idle_rows:
-            idle_ts.setdefault(r["session_id"], []).append(r["synced_ts"])
+            idle_ts.setdefault(str(r["session_id"]), []).append(r["synced_ts"])
 
         # Group visual events by session
         visual_by_session: dict[str, list[_VisualEvent]] = {}
         for r in visual_rows:
             ev = _VisualEvent(
-                event_id=r["event_id"],
-                session_id=r["session_id"],
+                event_id=str(r["event_id"]),
+                session_id=str(r["session_id"]),
                 user_id=r["user_id"],
                 machine_id=r["machine_id"],
                 synced_ts=r["synced_ts"],
@@ -270,7 +271,7 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
                 vision_case_id=r["vision_case_id"],
                 case_id=r["case_id"],
             )
-            visual_by_session.setdefault(r["session_id"], []).append(ev)
+            visual_by_session.setdefault(str(r["session_id"]), []).append(ev)
 
         # Segment each agent-session into task_sessions and write
         total = 0
@@ -312,7 +313,9 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
                     ts["session_id"], ts["user_id"], ts["machine_id"],
                     ts["task_label"], ts["start_ts"], ts["end_ts"],
                     ts["duration_min"], ts["screenshot_count"], ts["event_count"],
-                    ts["case_id"], ts["case_id_candidates"], ts["process_names"],
+                    ts["case_id"],
+                    json.dumps(ts["case_id_candidates"]) if ts["case_id_candidates"] else None,
+                    ts["process_names"],
                     ts["has_undo"], ts["has_error"],
                     ts["event_sequence"], ts["avg_cognitive_demand"],
                 )
