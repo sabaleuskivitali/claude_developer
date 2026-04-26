@@ -35,12 +35,26 @@ public static class Installer
             return 0;
         }
 
-        if (install)   return await InstallAsync(installCode);
-        if (uninstall) return Uninstall(purge);
+        bool registerTask = args.Contains("--register-task");
+
+        if (install)       return await InstallAsync(installCode);
+        if (uninstall)     return Uninstall(purge);
+        if (registerTask)  return RegisterTask();
 
         Console.WriteLine("Usage: Seamlean.Agent.exe --install [--install-code CODE]");
         Console.WriteLine("       Seamlean.Agent.exe --uninstall [--purge]");
+        Console.WriteLine("       Seamlean.Agent.exe --register-task");
         return 1;
+    }
+
+    // -------------------------------------------------------------------------
+
+    private static int RegisterTask()
+    {
+        var destExe = Path.Combine(InstallDir, ExeName);
+        RegisterScheduledTask(destExe);
+        Console.WriteLine($"OK: Scheduled Task '{TaskName}' re-registered");
+        return 0;
     }
 
     // -------------------------------------------------------------------------

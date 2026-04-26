@@ -46,6 +46,10 @@ try {
 # Cleanup staging
 Remove-Item -Path $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
 
+# Re-register scheduled task to pick up any updated settings (RestartOnFailure, etc.)
+Write-Log "Re-registering scheduled task"
+& "$InstallDir\Seamlean.Agent.exe" --register-task 2>$null
+
 # Start agent
 Write-Log "Starting scheduled task $ServiceName"
 schtasks /Run /TN $ServiceName 2>$null
