@@ -3,6 +3,7 @@ using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Seamlean.Agent.Capture.Meeting;
 using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
 
@@ -95,6 +96,24 @@ public sealed class EventStore : IDisposable
         // Migration for existing databases that don't have screenshot_sent yet
         try { _conn.Execute("ALTER TABLE events ADD COLUMN screenshot_sent INTEGER NOT NULL DEFAULT 0"); }
         catch { /* column already exists */ }
+
+        _conn.Execute("""
+            CREATE TABLE IF NOT EXISTS meetings (
+                meeting_id    TEXT    PRIMARY KEY,
+                machine_id    TEXT    NOT NULL,
+                user_id       TEXT    NOT NULL,
+                started_at    INTEGER NOT NULL,
+                ended_at      INTEGER,
+                process_name  TEXT,
+                window_title  TEXT,
+                trigger       TEXT,
+                mic_path      TEXT,
+                loopback_path TEXT,
+                mic_sent      INTEGER NOT NULL DEFAULT 0,
+                loopback_sent INTEGER NOT NULL DEFAULT 0,
+                meta_sent     INTEGER NOT NULL DEFAULT 0
+            );
+            """);
     }
 
     public void Insert(ActivityEvent ev)
@@ -240,6 +259,65 @@ public sealed class EventStore : IDisposable
                 return null;
         return msg.Length > 500 ? msg[..500] : msg;
     }
+
+    // ─── Meetings ────────────────────────────────────────────────────────────
+
+    public void InsertMeeting(MeetingRecord m)
+    {
+        lock (_writeLock)
+            _conn.Execute("""
+                INSERT OR IGNORE INTO meetings
+                    (meeting_id, machine_id, user_id, started_at, process_name, window_title, trigger)
+                VALUES
+                    (@MeetingId, @MachineId, @UserId, @StartedAt, @ProcessName, @WindowTitle, @Trigger)
+                """, m);
+    }
+
+    public void UpdateMeetingEnded(string meetingId, long endedAt, string? micPath, string? loopbackPath)
+    {
+        lock (_writeLock)
+            _conn.Execute("""
+                UPDATE meetings
+                   SET ended_at = @EndedAt, mic_path = @MicPath, loopback_path = @LoopbackPath
+                 WHERE meeting_id = @MeetingId
+                """, new { MeetingId = meetingId, EndedAt = endedAt, MicPath = micPath, LoopbackPath = loopbackPath });
+    }
+
+    public List<MeetingRecord> GetPendingMeetings(int limit)
+    {
+        lock (_writeLock)
+            return _conn.Query<MeetingRecord>(
+                """
+                SELECT * FROM meetings
+                 WHERE ended_at IS NOT NULL
+                   AND (meta_sent IN (0,2) OR mic_sent IN (0,2) OR loopback_sent IN (0,2))
+                 ORDER BY started_at
+                 LIMIT @Limit
+                """, new { Limit = limit }).ToList();
+    }
+
+    public void SetMeetingMicSent(string meetingId, int status)
+    {
+        lock (_writeLock)
+            _conn.Execute("UPDATE meetings SET mic_sent=@S WHERE meeting_id=@Id",
+                new { S = status, Id = meetingId });
+    }
+
+    public void SetMeetingLoopbackSent(string meetingId, int status)
+    {
+        lock (_writeLock)
+            _conn.Execute("UPDATE meetings SET loopback_sent=@S WHERE meeting_id=@Id",
+                new { S = status, Id = meetingId });
+    }
+
+    public void SetMeetingMetaSent(string meetingId, int status)
+    {
+        lock (_writeLock)
+            _conn.Execute("UPDATE meetings SET meta_sent=@S WHERE meeting_id=@Id",
+                new { S = status, Id = meetingId });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     public static string ComputeId(string input)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input))).ToLower();

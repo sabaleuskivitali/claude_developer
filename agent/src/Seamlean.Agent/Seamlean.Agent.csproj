@@ -32,6 +32,9 @@
     <PackageReference Include="System.Drawing.Common"                               Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Configuration"          Version="8.0.0" />
     <PackageReference Include="NReco.Logging.File"                                 Version="1.1.6" />
+    <PackageReference Include="NAudio"                                              Version="2.2.1" />
+    <PackageReference Include="Concentus"                                           Version="2.2.2" />
+    <PackageReference Include="Concentus.OggFile"                                  Version="1.0.7" />
   </ItemGroup>
 
   <ItemGroup>

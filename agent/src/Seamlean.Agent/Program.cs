@@ -3,6 +3,7 @@ using Seamlean.Agent.Bootstrap;
 using Seamlean.Agent.Browser;
 using Seamlean.Agent.Capture;
 using Seamlean.Agent.Capture.AppLogScanner;
+using Seamlean.Agent.Capture.Meeting;
 using Seamlean.Agent.Installer;
 using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
@@ -75,6 +76,10 @@ builder.Services.AddHostedService<BrowserQueueImporter>();
 // Localhost CRX host — serves extension.crx for non-domain machines
 builder.Services.AddHostedService<ExtensionHostService>();
 
+// Meeting recording pipeline
+builder.Services.AddSingleton<MeetingRecordingService>();
+builder.Services.AddHostedService<MeetingDetector>();
+
 // Sync and management — HTTP API
 builder.Services.AddSingleton<ServerDiscovery>();
 builder.Services.AddSingleton<ErrorReporter>();
@@ -87,6 +92,7 @@ builder.Services.AddSingleton<HttpUpdateManager>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<HttpUpdateManager>());
 builder.Services.AddHostedService<HttpCommandPoller>();
 builder.Services.AddHostedService<PerformanceMonitor>();
+builder.Services.AddHostedService<MeetingUploaderWorker>();
 
 // File logging — no console output in service mode
 builder.Logging.ClearProviders();
