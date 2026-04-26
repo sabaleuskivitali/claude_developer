@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 import os
@@ -6,8 +7,9 @@ import time
 import uuid
 
 import asyncpg
-from minio import Minio
 from minio.error import S3Error
+
+from utils import minio_client
 
 log = logging.getLogger(__name__)
 
@@ -16,15 +18,6 @@ AUDIO_BUCKET   = "windiag-audio"
 
 # Speaker labels per channel
 _SPEAKERS = {"mic": "Сотрудник", "loopback": "Собеседники"}
-
-
-def _minio_client() -> Minio:
-    return Minio(
-        os.environ["MINIO_ENDPOINT"],
-        access_key=os.environ["MINIO_ACCESS_KEY"],
-        secret_key=os.environ["MINIO_SECRET_KEY"],
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-    )
 
 
 def _load_audio(minio: Minio, path: str) -> bytes | None:
@@ -103,7 +96,7 @@ async def process_meetings_batch(
     batch_size: int = 5,
 ) -> int:
     """Transcribe pending meetings. Returns count processed."""
-    minio = _minio_client()
+    minio = minio_client()
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -194,6 +187,3 @@ async def process_meetings_batch(
 
     log.info("whisper: processed %d/%d meetings", processed, len(rows))
     return processed
-
-
-import asyncio

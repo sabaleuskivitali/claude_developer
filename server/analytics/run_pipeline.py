@@ -12,16 +12,15 @@ Usage:
 import argparse
 import asyncio
 import logging
-import os
 import sys
 import time
 
 import asyncpg
-from minio import Minio
 
 from fte_builder import build_fte_report
 from meeting_summarizer import summarize_meetings
 from task_reconstructor import reconstruct_tasks
+from utils import minio_client
 from vision_worker import process_vision_batch
 from whisper_worker import process_meetings_batch
 
@@ -34,17 +33,8 @@ logging.basicConfig(
 log = logging.getLogger("pipeline")
 
 
-def _minio_client() -> Minio:
-    return Minio(
-        os.environ["MINIO_ENDPOINT"],
-        access_key=os.environ["MINIO_ACCESS_KEY"],
-        secret_key=os.environ["MINIO_SECRET_KEY"],
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-    )
-
-
 async def run_vision(pool: asyncpg.Pool, batch_size: int) -> int:
-    minio = _minio_client()
+    minio = minio_client()
     total = 0
     while True:
         n = await process_vision_batch(pool, minio, batch_size)

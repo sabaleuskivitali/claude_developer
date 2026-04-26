@@ -145,12 +145,12 @@ async def list_profiles(pool: asyncpg.Pool, limit: int = 20) -> list[dict]:
 
 
 async def record_agent_enrollment(
-    pool: asyncpg.Pool,
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
     machine_id: str,
     profile_id: str,
     method: str,
 ) -> None:
-    await pool.execute(
+    await pool_or_conn.execute(
         """
         INSERT INTO agent_bootstrap_state (machine_id, profile_id, method, enrolled_at, status)
         VALUES ($1, $2::UUID, $3, NOW(), 'active')

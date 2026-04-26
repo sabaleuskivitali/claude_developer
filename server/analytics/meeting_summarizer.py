@@ -5,6 +5,8 @@ import os
 import anthropic
 import asyncpg
 
+from utils import parse_json_response
+
 log = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
@@ -85,13 +87,7 @@ async def summarize_meetings(pool: asyncpg.Pool) -> int:
                 system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-
-            parsed = json.loads(text)
+            parsed = parse_json_response(response.content[0].text)
 
             async with pool.acquire() as conn:
                 await conn.execute(

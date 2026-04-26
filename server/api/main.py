@@ -23,8 +23,9 @@ _API_KEY            = os.environ.get("API_KEY", "")
 _SERVER_URL         = os.environ.get("SERVER_URL", "")
 
 _ssl_ctx_server = ssl.create_default_context()
-_ssl_ctx_server.check_hostname = False
-_ssl_ctx_server.verify_mode = ssl.CERT_NONE
+if os.environ.get("SSL_VERIFY", "true").lower() not in ("1", "true", "yes"):
+    _ssl_ctx_server.check_hostname = False
+    _ssl_ctx_server.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
 from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, admin, extension
@@ -340,6 +341,9 @@ async def lifespan(app: FastAPI):
 
 _VERSION = _read_version()
 app = FastAPI(title="WinDiag API", version=_VERSION, lifespan=lifespan)
+
+_health_cache: dict = {}
+_HEALTH_TTL = 30  # seconds
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
@@ -400,19 +404,65 @@ app.include_router(extension.router)
 @app.get("/health")
 @limiter.limit("10/minute")
 async def health(request: Request):
-    checks = {}
-    status = "ok"
+    now = time.time()
+    cached = _health_cache.get("result")
+    if cached and now - _health_cache.get("ts", 0) < _HEALTH_TTL:
+        return cached
 
-    # DB
+    checks: dict = {}
+    overall = "ok"
+    _DB_TIMEOUT = 5  # seconds per query
+
+    # DB + expensive analytics queries in one connection
     try:
         async with request.app.state.db.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-            row = await conn.fetchrow("SELECT pg_database_size(current_database()) AS sz")
+            await conn.fetchval("SELECT 1", timeout=_DB_TIMEOUT)
+            row = await conn.fetchrow(
+                "SELECT pg_database_size(current_database()) AS sz", timeout=_DB_TIMEOUT
+            )
             checks["db"] = "ok"
             checks["db_size_mb"] = round(row["sz"] / 1024 / 1024, 1)
+
+            vision_backlog = await conn.fetchval(
+                "SELECT COUNT(*) FROM events WHERE vision_done = FALSE AND layer = 'visual'",
+                timeout=_DB_TIMEOUT,
+            )
+            stale = await conn.fetch(
+                """SELECT machine_id, MAX((payload->>'events_buffered')::INT) AS buffered
+                   FROM events
+                   WHERE event_type = 'HeartbeatPulse'
+                     AND loaded_at > NOW() - INTERVAL '15 minutes'
+                   GROUP BY machine_id
+                   HAVING MAX((payload->>'events_buffered')::INT) > 1000""",
+                timeout=_DB_TIMEOUT,
+            )
+            etl_row = await conn.fetchrow(
+                "SELECT run_at, files, rows, duration_ms, error FROM etl_status ORDER BY id DESC LIMIT 1",
+                timeout=_DB_TIMEOUT,
+            )
+
+        checks["vision_backlog"] = int(vision_backlog)
+        if stale:
+            checks["stale_agents"] = [
+                {"machine_id": r["machine_id"], "buffered": r["buffered"]} for r in stale
+            ]
+            overall = "degraded"
+
+        if etl_row:
+            checks["etl_last_run"] = {
+                "run_at":      etl_row["run_at"].isoformat(),
+                "files":       etl_row["files"],
+                "rows":        etl_row["rows"],
+                "duration_ms": etl_row["duration_ms"],
+                "error":       etl_row["error"],
+                "status":      "error" if etl_row["error"] else "ok",
+            }
+            if etl_row["error"]:
+                overall = "degraded"
+
     except Exception as e:
         checks["db"] = f"error: {e}"
-        status = "degraded"
+        overall = "degraded"
 
     # MinIO
     try:
@@ -420,7 +470,7 @@ async def health(request: Request):
         checks["minio"] = "ok"
     except Exception as e:
         checks["minio"] = f"error: {e}"
-        status = "degraded"
+        overall = "degraded"
 
     # Disk space
     try:
@@ -429,67 +479,22 @@ async def health(request: Request):
         total_gb = round(total / 1024 ** 3, 1)
         checks["disk_free_gb"]  = free_gb
         checks["disk_total_gb"] = total_gb
+        checks["disk"] = "warning: low" if free_gb < 5 else "ok"
         if free_gb < 5:
-            checks["disk"] = "warning: low"
-            status = "degraded"
-        else:
-            checks["disk"] = "ok"
+            overall = "degraded"
     except Exception as e:
         checks["disk"] = f"error: {e}"
 
-    # Event queue depth
+    # Event queue depth (in-memory, no I/O)
     try:
-        q = request.app.state.event_queue
-        checks["queue_depth"] = q._queue.qsize()
+        checks["queue_depth"] = request.app.state.event_queue._queue.qsize()
     except Exception:
         pass
 
-    # Vision backlog + stale agents (online but not syncing)
-    try:
-        async with request.app.state.db.acquire() as conn:
-            vision_backlog = await conn.fetchval(
-                "SELECT COUNT(*) FROM events WHERE vision_done = FALSE AND layer = 'visual'"
-            )
-            stale = await conn.fetch(
-                """SELECT machine_id, MAX((payload->>'events_buffered')::INT) AS buffered
-                   FROM events
-                   WHERE event_type = 'HeartbeatPulse'
-                     AND loaded_at > NOW() - INTERVAL '15 minutes'
-                   GROUP BY machine_id
-                   HAVING MAX((payload->>'events_buffered')::INT) > 1000"""
-            )
-        checks["vision_backlog"] = int(vision_backlog)
-        if stale:
-            checks["stale_agents"] = [
-                {"machine_id": r["machine_id"], "buffered": r["buffered"]} for r in stale
-            ]
-            status = "degraded"
-    except Exception:
-        pass
-
-    # ETL last run
-    try:
-        async with request.app.state.db.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT run_at, files, rows, duration_ms, error FROM etl_status ORDER BY id DESC LIMIT 1"
-            )
-        if row:
-            checks["etl_last_run"] = {
-                "run_at":      row["run_at"].isoformat(),
-                "files":       row["files"],
-                "rows":        row["rows"],
-                "duration_ms": row["duration_ms"],
-                "error":       row["error"],
-            }
-            if row["error"]:
-                checks["etl_last_run"]["status"] = "error"
-                status = "degraded"
-            else:
-                checks["etl_last_run"]["status"] = "ok"
-    except Exception:
-        pass
-
-    return {"status": status, "version": _VERSION, **checks}
+    result = {"status": overall, "version": _VERSION, **checks}
+    _health_cache["result"] = result
+    _health_cache["ts"] = now
+    return result
 
 
 @app.get("/discovery")

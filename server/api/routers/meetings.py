@@ -67,14 +67,18 @@ async def upload_audio(
     key = storage.audio_key(machine_id, meeting_id, channel)
     await storage.put_audio(key, data)
 
-    col = "mic_path" if channel == "mic" else "loopback_path"
-    async with request.app.state.db.acquire() as conn:
-        await conn.execute(
-            f"""
-            INSERT INTO meeting_recordings (meeting_id, machine_id, user_id, started_at, {col})
+    if channel == "mic":
+        sql = """
+            INSERT INTO meeting_recordings (meeting_id, machine_id, user_id, started_at, mic_path)
             VALUES ($1::UUID, $2, '', 0, $3)
-            ON CONFLICT (meeting_id) DO UPDATE SET {col} = EXCLUDED.{col}
-            """,
-            meeting_id, machine_id, key,
-        )
+            ON CONFLICT (meeting_id) DO UPDATE SET mic_path = EXCLUDED.mic_path
+        """
+    else:
+        sql = """
+            INSERT INTO meeting_recordings (meeting_id, machine_id, user_id, started_at, loopback_path)
+            VALUES ($1::UUID, $2, '', 0, $3)
+            ON CONFLICT (meeting_id) DO UPDATE SET loopback_path = EXCLUDED.loopback_path
+        """
+    async with request.app.state.db.acquire() as conn:
+        await conn.execute(sql, meeting_id, machine_id, key)
     return {"path": key}
