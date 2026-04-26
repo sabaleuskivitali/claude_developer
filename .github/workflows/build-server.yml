@@ -85,10 +85,11 @@ jobs:
     - name: Smoke test — API imports cleanly
       run: |
         docker run --rm \
+          --entrypoint python \
           -e SERVER_NAME=smoke \
           -e API_KEY=smoke \
           ghcr.io/sabaleuskivitali/claude_developer/server-api:${{ env.VERSION }} \
-          python -c "import sys; sys.path.insert(0, '/app'); import main; print('OK')"
+          -c "import sys; sys.path.insert(0, '/app'); import main; print('OK')"
 
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/server/v')
