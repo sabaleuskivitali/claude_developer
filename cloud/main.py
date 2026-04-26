@@ -1964,9 +1964,13 @@ def _ingest_errors(server_token: str, errors: list, docker_errors: list) -> None
     conn = sqlite3.connect(ADMIN_DB_PATH)
     try:
         for err in errors:
+            payload_d = err.get("payload") or {}
             raw = (err.get("raw_message") or
                    err.get("element_name") or
-                   json.dumps(err.get("payload", {}))[:300])
+                   payload_d.get("exception_message") or
+                   payload_d.get("error") or
+                   payload_d.get("message") or
+                   json.dumps(payload_d)[:300])
             pattern   = _normalize_error(str(raw))
             component = err.get("layer") or "unknown"
             batch_hash = hashlib.sha256(
