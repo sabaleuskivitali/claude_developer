@@ -13,6 +13,8 @@ services:
       dockerfile: Dockerfile.admin
     volumes:
       - ./data:/app/data   # shared: reads admin.db + users.db written by api
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     restart: unless-stopped
 
   nginx:
