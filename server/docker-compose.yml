@@ -68,6 +68,50 @@ services:
       minio:
         condition: service_healthy
 
+  worker:
+    build:
+      context: .
+      dockerfile: analytics/Dockerfile
+    container_name: ${SERVER_NAME}_worker
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DSN:       postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB:-diag}
+      ANTHROPIC_API_KEY:  ${ANTHROPIC_API_KEY}
+      MINIO_ENDPOINT:     127.0.0.1:9000
+      MINIO_ACCESS_KEY:   ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY:   ${MINIO_SECRET_KEY}
+      MINIO_SECURE:       "false"
+      VISION_BATCH_SIZE:  ${VISION_BATCH_SIZE:-20}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  ofelia:
+    image: mcuadros/ofelia:latest
+    container_name: ${SERVER_NAME}_ofelia
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - worker
+    command: daemon --docker
+    labels:
+      ofelia.job-exec.vision.schedule:     "0 */2 * * *"
+      ofelia.job-exec.vision.container:    "${SERVER_NAME}_worker"
+      ofelia.job-exec.vision.command:      "python run_pipeline.py vision --batch-size ${VISION_BATCH_SIZE:-20}"
+
+      ofelia.job-exec.reconstruct.schedule: "30 */2 * * *"
+      ofelia.job-exec.reconstruct.container: "${SERVER_NAME}_worker"
+      ofelia.job-exec.reconstruct.command:   "python run_pipeline.py reconstruct --lookback-hours 48"
+
+      ofelia.job-exec.fte.schedule:        "0 3 * * *"
+      ofelia.job-exec.fte.container:       "${SERVER_NAME}_worker"
+      ofelia.job-exec.fte.command:         "python run_pipeline.py fte --lookback-days 30"
+
   nginx:
     image: nginx:alpine
     container_name: ${SERVER_NAME}_nginx
@@ -78,27 +122,8 @@ services:
     depends_on:
       - api
 
-  etl:
-    build:
-      context: .
-      dockerfile: etl/Dockerfile
-    container_name: ${SERVER_NAME}_etl
-    restart: unless-stopped
-    environment:
-      POSTGRES_DSN:        postgresql://${POSTGRES_USER:-diag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-diag}
-      SMB_SHARE_PATH:      ${SMB_SHARE_PATH:-/mnt/diag}
-      ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-60}
-    volumes:
-      - ${SMB_MOUNT_PATH:-/mnt/diag}:${SMB_SHARE_PATH:-/mnt/diag}:ro
-      - etl_state:/app/state
-      - ./etl:/app/etl:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 volumes:
   postgres_data:
   minio_data:
   api_certs:
   api_runtime:
-  etl_state:
