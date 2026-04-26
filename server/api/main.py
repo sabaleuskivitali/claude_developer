@@ -27,7 +27,7 @@ _ssl_ctx_server.check_hostname = False
 _ssl_ctx_server.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
-from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, admin
+from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, admin, extension
 
 _SERVER_NAME = os.environ.get("SERVER_NAME", "server")
 
@@ -394,6 +394,7 @@ app.include_router(agents.router)
 app.include_router(etl.router)
 app.include_router(bootstrap.router)
 app.include_router(admin.router)
+app.include_router(extension.router)
 
 
 @app.get("/health")
