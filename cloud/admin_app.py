@@ -419,6 +419,8 @@ def batch_detail(batch_id: int):
         f'<span>Последний: {_ago(b["last_seen"])}</span>'
         f'<span>Всего: <strong style="color:#111">{b["count"]}</strong></span>'
         f'<span>Severity: <strong style="color:#111">{b.get("severity","?")}</strong></span>'
+        + (f'<span style="color:#ef4444;font-weight:600">🔁 Рецидив ×{b["recurrence"]}</span>'
+           if b.get("recurrence") else '')
         f'</div>'
         + (
             f'<div style="margin-top:14px">'
