@@ -668,7 +668,7 @@ def dashboard(
         srv = _server_name(b["server_token"])
         src = SOURCE_LABEL.get(b["source"], b["source"])
         src_tip = SOURCE_TOOLTIP.get(b["source"], b["source"])
-        sev = b.get("severity") or "error"
+        sev = b["severity"] or "error"
         show_autorun = b["status"] in ("open", "investigating")
         rows += (
             f'<tr>'
