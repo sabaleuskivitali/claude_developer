@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query, Request, HTTPException
+import time
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 from pydantic import BaseModel
 
 from auth import require_api_key
@@ -9,68 +10,71 @@ router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
 class MachineSettingsPatch(BaseModel):
     auto_update: bool | None = None
 
+_STATUS_ONLINE  = "online"   # heartbeat < 2 min ago
+_STATUS_WARNING = "warning"  # heartbeat 2–15 min ago
+_STATUS_OFFLINE = "offline"  # heartbeat > 15 min ago
+
 
 @router.get("/agents")
-async def list_agents(
-    request: Request,
-    limit:  int = Query(200, ge=1, le=1000),
-    offset: int = Query(0,   ge=0),
-):
-    import time
+async def list_agents(request: Request):
     now_ms       = int(time.time() * 1000)
     one_hour_ago = now_ms - 3_600_000
     one_day_ago  = now_ms - 86_400_000
 
-    async with request.app.state.db.acquire() as conn:
-        # Latest heartbeat per machine + SQL-computed status
-        rows = await conn.fetch("""
-            SELECT DISTINCT ON (e.machine_id)
-                e.machine_id,
-                (e.payload->>'user_id')                                    AS user_id,
-                (e.payload->>'payload')::jsonb->>'AgentVersion'            AS agent_version,
-                (e.payload->>'payload')::jsonb->>'Hostname'                AS hostname,
-                (e.payload->>'payload')::jsonb->>'Username'                AS username,
-                (e.payload->>'payload')::jsonb->>'Domain'                  AS domain,
-                (e.payload->>'payload')::jsonb->>'LanIp'                   AS lan_ip,
-                w.wan_ip,
-                (e.payload->>'drift_ms')::INT                              AS drift_ms,
-                ((e.payload->>'payload')::jsonb->'LayerStats')::text       AS layer_stats,
-                e.timestamp_utc,
-                ($1 - e.timestamp_utc) / 1000                             AS lag_sec,
-                CASE
-                    WHEN ($1 - e.timestamp_utc) < 120000  THEN 'online'
-                    WHEN ($1 - e.timestamp_utc) < 900000  THEN 'warning'
-                    ELSE 'offline'
-                END                                                        AS status
-            FROM events e
-            LEFT JOIN machine_wan_ips w ON w.machine_id = e.machine_id
-            WHERE e.event_type = 'HeartbeatPulse'
-            ORDER BY e.machine_id, e.timestamp_utc DESC
-            LIMIT $2 OFFSET $3
-        """, now_ms, limit, offset)
+    rows = await request.app.state.db.fetch("""
+        SELECT DISTINCT ON (e.machine_id)
+            e.machine_id,
+            (e.payload->>'user_id')                                                AS user_id,
+            (e.payload->>'payload')::jsonb->>'AgentVersion'                        AS agent_version,
+            (e.payload->>'payload')::jsonb->>'Hostname'                            AS hostname,
+            (e.payload->>'payload')::jsonb->>'Username'                            AS username,
+            (e.payload->>'payload')::jsonb->>'Domain'                              AS domain,
+            (e.payload->>'payload')::jsonb->>'LanIp'                               AS lan_ip,
+            w.wan_ip                                                               AS wan_ip,
+            (e.payload->>'drift_ms')::INT                                          AS drift_ms,
+            ((e.payload->>'payload')::jsonb->'LayerStats')::text                   AS layer_stats,
+            e.timestamp_utc
+        FROM events e
+        LEFT JOIN machine_wan_ips w ON w.machine_id = e.machine_id
+        WHERE e.event_type = 'HeartbeatPulse'
+        ORDER BY e.machine_id, e.timestamp_utc DESC
+    """)
 
-        layer_rows = await conn.fetch("""
-            SELECT
-                machine_id,
-                layer,
-                COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type != 'LayerError') AS events_1h,
-                COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type != 'LayerError') AS events_24h,
-                COUNT(*) FILTER (WHERE event_type != 'LayerError')                          AS events_total,
-                COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type = 'LayerError')  AS errors_1h,
-                COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type = 'LayerError')  AS errors_24h
-            FROM events
-            WHERE timestamp_utc >= $2
-              AND event_type NOT IN ('HeartbeatPulse', 'SyncCompleted')
-              AND layer IS NOT NULL
-            GROUP BY machine_id, layer
-        """, one_hour_ago, one_day_ago)
+    layer_rows = await request.app.state.db.fetch("""
+        SELECT
+            machine_id,
+            layer,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type != 'LayerError') AS events_1h,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type != 'LayerError') AS events_24h,
+            COUNT(*) FILTER (WHERE event_type != 'LayerError')                          AS events_total,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $1 AND event_type = 'LayerError')  AS errors_1h,
+            COUNT(*) FILTER (WHERE timestamp_utc >= $2 AND event_type = 'LayerError')  AS errors_24h
+        FROM events
+        WHERE timestamp_utc >= $2
+          AND event_type NOT IN ('HeartbeatPulse', 'SyncCompleted')
+          AND layer IS NOT NULL
+        GROUP BY machine_id, layer
+    """, one_hour_ago, one_day_ago)
 
-        data_rows = await conn.fetch("""
-            SELECT machine_id,
-                   ROUND(SUM(octet_length(payload::text)) / 1048576.0, 1) AS data_mb
+    # Estimate data_mb per machine using event counts + avg row size from pg stats.
+    # Avoids a full-table SUM(octet_length(...)) scan that causes 5s timeout in cloud _api().
+    data_rows = await request.app.state.db.fetch("""
+        WITH machine_counts AS (
+            SELECT machine_id, COUNT(*) AS cnt
             FROM events
             GROUP BY machine_id
-        """)
+        ),
+        table_stats AS (
+            SELECT
+                GREATEST(reltuples::BIGINT, 1) AS estimated_rows,
+                pg_total_relation_size('events') AS total_bytes
+            FROM pg_class
+            WHERE relname = 'events'
+        )
+        SELECT mc.machine_id,
+               ROUND(mc.cnt::FLOAT * ts.total_bytes / ts.estimated_rows / 1048576.0, 1) AS data_mb
+        FROM machine_counts mc, table_stats ts
+    """)
 
     data_index: dict[str, float] = {r["machine_id"]: float(r["data_mb"]) for r in data_rows}
 
@@ -87,8 +91,19 @@ async def list_agents(
             "errors_24h":   int(lr["errors_24h"]),
         }
 
-    agents = [
-        {
+    agents = []
+    for r in rows:
+        lag_ms  = now_ms - r["timestamp_utc"]
+        lag_sec = lag_ms // 1000
+
+        if lag_sec < 120:
+            status = _STATUS_ONLINE
+        elif lag_sec < 900:
+            status = _STATUS_WARNING
+        else:
+            status = _STATUS_OFFLINE
+
+        agents.append({
             "machine_id":    r["machine_id"],
             "user_id":       r["user_id"],
             "hostname":      r["hostname"],
@@ -97,18 +112,16 @@ async def list_agents(
             "lan_ip":        r["lan_ip"],
             "wan_ip":        r["wan_ip"],
             "agent_version": r["agent_version"],
-            "status":        r["status"],
-            "lag_sec":       int(r["lag_sec"]),
+            "status":        status,
+            "lag_sec":       lag_sec,
             "drift_ms":      r["drift_ms"],
             "last_seen_ts":  r["timestamp_utc"],
             "layer_stats":   r["layer_stats"],
             "layer_counts":  layer_index.get(r["machine_id"], {}),
             "data_mb":       data_index.get(r["machine_id"]),
-        }
-        for r in rows
-    ]
+        })
 
-    return {"agents": agents, "count": len(agents), "limit": limit, "offset": offset}
+    return {"agents": agents, "count": len(agents)}
 
 
 @router.get("/machines/{machine_id}/settings")
