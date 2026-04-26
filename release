@@ -2,23 +2,17 @@
 set -e
 
 COMPONENT=${1:?Usage: ./release <agent|server|cloud> ["commit message"|stable]}
-ARG2=${2:-""}
-ARG3=${3:-""}
 
-# Определяем флаг stable и сообщение коммита
+# Parse args
 STABLE=false
 MSG=""
-for arg in "$ARG2" "$ARG3"; do
-  if [ "$arg" = "stable" ]; then
-    STABLE=true
-  elif [ -n "$arg" ]; then
-    MSG="$arg"
+for arg in "${@:2}"; do
+  if   [ "$arg" = "stable" ]; then STABLE=true
+  elif [ -n "$arg" ];         then MSG="$arg"
   fi
 done
 
-BRANCH="work/$COMPONENT"
-
-WORKTREES=(
+declare -A WORKTREES=(
   ["agent"]="$HOME/Applications/seamlean-agent"
   ["server"]="$HOME/Applications/seamlean-server"
   ["cloud"]="$HOME/Applications/seamlean-cloud"
@@ -30,40 +24,44 @@ if [ -z "$WORKTREE" ]; then
   exit 1
 fi
 
-# --- Определяем версию по последнему обычному тегу (без -stable) ---
-LAST_TAG=$(git tag -l "$COMPONENT/v*" | grep -v '\-stable' | sort -V | tail -1)
+BRANCH="work/$COMPONENT"
+DEV_DIR="$HOME/Applications/Claude/Dev"
 
+# --- Проверяем что worktree на правильной ветке ---
+WORKTREE_BRANCH=$(git -C "$WORKTREE" branch --show-current 2>/dev/null || echo "")
+if [ "$WORKTREE_BRANCH" != "$BRANCH" ]; then
+  echo "❌ Worktree $WORKTREE на ветке '$WORKTREE_BRANCH', ожидается '$BRANCH'"
+  exit 1
+fi
+
+# --- Версия по последнему тегу ---
+cd "$DEV_DIR"
+LAST_TAG=$(git tag -l "$COMPONENT/v*" | grep -v '\-stable' | sort -V | tail -1)
 if [ -z "$LAST_TAG" ]; then
   VERSION="0.1.0"
-  echo "ℹ️  Тегов нет, начинаем с v$VERSION"
 else
   LAST_VERSION="${LAST_TAG#$COMPONENT/v}"
   IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
   PATCH=$((PATCH + 1))
   VERSION="$MAJOR.$MINOR.$PATCH"
-  echo "📦 $LAST_TAG → v$VERSION"
 fi
-
 TAG="$COMPONENT/v$VERSION"
-STABLE_TAG="$COMPONENT/v$VERSION-stable"
+echo "📦 ${LAST_TAG:-(нет тегов)} → $TAG"
 
-# --- Пишем VERSION в worktree ---
+# --- Пишем VERSION и коммитим в worktree ---
+# VERSION всегда меняется → тег всегда на свежем компонентном коммите, не на чужом
 echo "$VERSION" > "$WORKTREE/$COMPONENT/VERSION"
 
-# --- Коммит в worktree ---
 cd "$WORKTREE"
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  COMMIT_MSG="${MSG:-"$COMPONENT: v$VERSION"}"
-  echo "📝 Коммит в $BRANCH: \"$COMMIT_MSG\""
-  git add -A
-  git commit -m "$COMMIT_MSG"
-else
-  echo "✅ Нечего коммитить в $BRANCH"
-fi
+git add -A
+COMMIT_MSG="${MSG:-"release: $COMPONENT v$VERSION"}"
+echo "📝 Коммит в $BRANCH: \"$COMMIT_MSG\""
+git commit -m "$COMMIT_MSG
 
-# --- Merge → push → tag ---
-cd "$HOME/Applications/Claude/Dev"
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
+# --- Merge → main → push → tag ---
+cd "$DEV_DIR"
 echo "🔀 Merging $BRANCH → main..."
 git merge "$BRANCH" --no-edit
 
@@ -74,15 +72,56 @@ echo "🏷️  Tagging $TAG..."
 git tag "$TAG"
 git push origin "$TAG"
 
-# --- Stable тег (если запрошен) ---
+# --- Stable ---
 if [ "$STABLE" = true ]; then
+  STABLE_TAG="$COMPONENT/v$VERSION-stable"
   echo "🔒 Tagging $STABLE_TAG..."
   git tag "$STABLE_TAG"
   git push origin "$STABLE_TAG"
+
+  # Читаем stable-версии других компонентов из git-тегов
+  _stable_ver() {
+    local c=$1
+    [ "$c" = "$COMPONENT" ] && { echo "$VERSION"; return; }
+    local t
+    t=$(git tag -l "$c/v*-stable" | sort -V | tail -1)
+    [ -n "$t" ] && echo "${t#$c/v}" | sed 's/-stable//' || echo "unknown"
+  }
+
+  AGENT_VER=$(_stable_ver agent)
+  SERVER_VER=$(_stable_ver server)
+  CLOUD_VER=$(_stable_ver cloud)
+  TODAY=$(date +%Y-%m-%d)
+
+  # Обновляем COMPATIBILITY.json
+  cat > "$DEV_DIR/COMPATIBILITY.json" <<JSON
+{
+  "cloud":   "$CLOUD_VER",
+  "server":  "$SERVER_VER",
+  "agent":   "$AGENT_VER",
+  "updated": "$TODAY"
+}
+JSON
+  git add COMPATIBILITY.json
+  git commit -m "chore: COMPATIBILITY.json — $COMPONENT $VERSION stable
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+  git push origin main
+
+  # system/vDATE — защита от коллизий
+  SYS_BASE="system/v$(date +%Y.%m.%d)"
+  SYS_TAG="$SYS_BASE"
+  for suffix in "" ".2" ".3" ".4" ".5"; do
+    SYS_TAG="${SYS_BASE}${suffix}"
+    git tag "$SYS_TAG" 2>/dev/null && break
+  done
+  git push origin "$SYS_TAG"
+
   echo ""
-  echo "✅ $STABLE_TAG — GitHub Release создан, OTA уведомит агентов"
+  echo "✅ $STABLE_TAG + $SYS_TAG"
+  echo "   cloud=$CLOUD_VER  server=$SERVER_VER  agent=$AGENT_VER"
 else
   echo ""
   echo "✅ $TAG — CI собирает артефакт"
-  echo "   Для публичного релиза: ./release $COMPONENT stable"
+  echo "   Для стабильного релиза: ./release $COMPONENT stable"
 fi
