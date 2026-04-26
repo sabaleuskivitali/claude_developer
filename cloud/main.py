@@ -1383,6 +1383,7 @@ POSTGRES_DB=diag
 POSTGRES_USER=diag
 POSTGRES_PASSWORD=${PG_PASS}
 API_KEY=pending
+CLOUD_SERVER_TOKEN=
 MINIO_ACCESS_KEY=${MINIO_KEY}
 MINIO_SECRET_KEY=${MINIO_SECRET}
 PORT_RANGE_START=49200
@@ -1430,10 +1431,14 @@ if [ -n "$INSTALL_TOKEN" ]; then
 
   if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
     API_KEY=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['api_key'])")
+    SERVER_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('server_token'); print(v if v else '')")
     TUNNEL_TOKEN=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_token'); print(v if v else '')")
     TUNNEL_URL=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tunnel_url'); print(v if v else '')")
     sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
     sed -i "s|^CLOUD_URL=.*|CLOUD_URL=https://seamlean.com|" .env
+    if [ -n "$SERVER_TOKEN" ]; then
+      sed -i "s|^CLOUD_SERVER_TOKEN=.*|CLOUD_SERVER_TOKEN=${SERVER_TOKEN}|" .env
+    fi
     if [ -n "$TUNNEL_URL" ]; then
       sed -i "s|^SERVER_URL=.*|SERVER_URL=${TUNNEL_URL}|" .env
     fi
