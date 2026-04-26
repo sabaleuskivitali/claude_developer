@@ -3,6 +3,7 @@ using System.Text;
 using System.Windows.Automation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Seamlean.Agent.Management;
 using Seamlean.Agent.Models;
 using Seamlean.Agent.Storage;
 
@@ -18,6 +19,7 @@ public sealed class UiAutomationCapture : BackgroundService
     private readonly NtpSynchronizer _ntp;
     private readonly AgentSettings _settings;
     private readonly ILogger<UiAutomationCapture> _logger;
+    private readonly IResourceGovernor _governor;
 
     internal Action<string>? OnUiEvent;   // wired by ScreenshotWorker
 
@@ -37,12 +39,14 @@ public sealed class UiAutomationCapture : BackgroundService
         EventStore store,
         NtpSynchronizer ntp,
         IOptions<AgentSettings> options,
-        ILogger<UiAutomationCapture> logger)
+        ILogger<UiAutomationCapture> logger,
+        IResourceGovernor governor)
     {
         _store    = store;
         _ntp      = ntp;
         _settings = options.Value;
         _logger   = logger;
+        _governor = governor;
     }
 
     protected override Task ExecuteAsync(CancellationToken ct)
@@ -96,7 +100,7 @@ public sealed class UiAutomationCapture : BackgroundService
             var ev = BuildEvent(el, nameof(EventType.Invoked), null, null);
             if (ev is null) return;
             _store.Insert(ev);
-            if (!ev.IsPasswordField)
+            if (!ev.IsPasswordField && _governor.Level != ThrottleLevel.Emergency)
                 OnUiEvent?.Invoke("ui_event");
         }
         catch (Exception ex) { WriteLayerError(ex); }
@@ -112,7 +116,7 @@ public sealed class UiAutomationCapture : BackgroundService
             if (ev is null) return;
             _store.Insert(ev);
 
-            if (!ev.IsPasswordField)
+            if (!ev.IsPasswordField && _governor.Level != ThrottleLevel.Emergency)
             {
                 // Debounce: reset timer on every keystroke, screenshot fires after silence
                 var debounceMs = _settings.CaptureProfile.ValueChangedDebounceMs;
@@ -138,7 +142,7 @@ public sealed class UiAutomationCapture : BackgroundService
             if (ev is null) return;
             _store.Insert(ev);
 
-            if (!ev.IsPasswordField)
+            if (!ev.IsPasswordField && _governor.Level != ThrottleLevel.Emergency)
             {
                 // Throttle: screenshot no more than once per SelectionChangedDebounceMs
                 var now = DateTime.UtcNow;

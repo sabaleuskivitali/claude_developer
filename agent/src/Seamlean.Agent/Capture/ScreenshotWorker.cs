@@ -16,6 +16,7 @@ public sealed class ScreenshotWorker : BackgroundService
     private readonly AgentSettings _settings;
     private readonly ILogger<ScreenshotWorker> _logger;
     private readonly LayerHealthTracker _tracker;
+    private readonly IResourceGovernor _governor;
 
     private long _lastDHash;
 
@@ -24,13 +25,15 @@ public sealed class ScreenshotWorker : BackgroundService
         NtpSynchronizer ntp,
         IOptions<AgentSettings> options,
         ILogger<ScreenshotWorker> logger,
-        LayerHealthTracker tracker)
+        LayerHealthTracker tracker,
+        IResourceGovernor governor)
     {
         _store    = store;
         _ntp      = ntp;
         _settings = options.Value;
         _logger   = logger;
         _tracker  = tracker;
+        _governor = governor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -47,7 +50,11 @@ public sealed class ScreenshotWorker : BackgroundService
         using var tick = new PeriodicTimer(TimeSpan.FromSeconds(2));
         while (await tick.WaitForNextTickAsync(ct))
         {
+            if (_governor.Level == ThrottleLevel.Emergency) continue;
+
             var intervalSec = GetCurrentProcessInterval(profile);
+            if (_governor.Level == ThrottleLevel.Courtesy) intervalSec *= 3;
+
             if ((DateTime.UtcNow - lastCapture).TotalSeconds >= intervalSec)
             {
                 try { CaptureAndStore("periodic"); }
@@ -70,6 +77,7 @@ public sealed class ScreenshotWorker : BackgroundService
     /// <summary>Called by WindowWatcher / UiAutomationCapture on significant events.</summary>
     public void TriggerCapture(string reason)
     {
+        if (_governor.Level == ThrottleLevel.Emergency) return;
         try { CaptureAndStore(reason); }
         catch (Exception ex) { WriteLayerError(ex); }
     }

@@ -55,6 +55,11 @@ builder.Services.AddSingleton<EventStore>();
 builder.Services.AddSingleton<NtpSynchronizer>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NtpSynchronizer>());
 
+// Resource governor — throttle heavy layers when CPU or RAM is high
+builder.Services.AddSingleton<ResourceGovernor>();
+builder.Services.AddSingleton<IResourceGovernor>(sp => sp.GetRequiredService<ResourceGovernor>());
+builder.Services.AddHostedService<ResourceGovernorWorker>();
+
 // Capture layers — WindowWatcher, ScreenshotWorker, UiAutomationCapture registered as
 // singletons so we can resolve them by type after Build() to wire screenshot triggers.
 builder.Services.AddSingleton<WindowWatcher>();
