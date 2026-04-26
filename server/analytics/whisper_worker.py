@@ -7,6 +7,7 @@ import time
 import uuid
 
 import asyncpg
+from minio import Minio
 from minio.error import S3Error
 
 from utils import minio_client
