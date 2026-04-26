@@ -6,4 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY analytics/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY analytics/ .
+ARG APP_VERSION=dev
+RUN echo "$APP_VERSION" > /app/VERSION
 CMD ["sleep", "infinity"]

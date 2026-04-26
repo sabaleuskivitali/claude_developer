@@ -64,6 +64,7 @@ jobs:
         context: server
         file: server/api/Dockerfile
         push: true
+        build-args: APP_VERSION=${{ env.VERSION }}
         tags: |
           ghcr.io/sabaleuskivitali/claude_developer/server-api:${{ env.VERSION }}
           ghcr.io/sabaleuskivitali/claude_developer/server-api:latest
@@ -76,6 +77,7 @@ jobs:
         context: server
         file: server/analytics/Dockerfile
         push: true
+        build-args: APP_VERSION=${{ env.VERSION }}
         tags: |
           ghcr.io/sabaleuskivitali/claude_developer/server-worker:${{ env.VERSION }}
           ghcr.io/sabaleuskivitali/claude_developer/server-worker:latest

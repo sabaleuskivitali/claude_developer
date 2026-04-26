@@ -11,7 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy API source and bootstrap module (shared library)
 COPY api/ .
 COPY bootstrap/ ./bootstrap/
-COPY VERSION /app/VERSION
+
+ARG APP_VERSION=dev
+RUN echo "$APP_VERSION" > /app/VERSION
 RUN chmod +x entrypoint.sh && mkdir -p /app/runtime /app/certs
 
 ENTRYPOINT ["./entrypoint.sh"]
