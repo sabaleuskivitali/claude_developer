@@ -11,7 +11,9 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 from pathlib import Path
+from urllib.parse import urlencode
 
 import anthropic as _anthropic
 from fastapi import FastAPI, Form, Request
@@ -159,7 +161,7 @@ _CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
      background:#f3f4f6;color:#111827;font-size:.9rem}
-.wrap{max-width:1100px;margin:0 auto;padding:24px 20px}
+.wrap{max-width:1200px;margin:0 auto;padding:24px 20px}
 h1{font-size:1.3rem;font-weight:700;margin-bottom:4px}
 h2{font-size:1rem;font-weight:600;margin:20px 0 10px}
 .sub{color:#6b7280;font-size:.8rem;margin-bottom:20px}
@@ -168,7 +170,12 @@ h2{font-size:1rem;font-weight:600;margin:20px 0 10px}
 .card:hover{border-color:#d1d5db;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 table{width:100%;border-collapse:collapse}
 th{padding:6px 10px;text-align:left;font-size:.75rem;font-weight:600;
-   color:#6b7280;text-transform:uppercase;border-bottom:1px solid #e5e7eb}
+   color:#6b7280;text-transform:uppercase;border-bottom:1px solid #e5e7eb;
+   white-space:nowrap}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:#374151}
+th.sort-asc::after{content:" ↑";color:#3b82f6}
+th.sort-desc::after{content:" ↓";color:#3b82f6}
 td{padding:8px 10px;border-bottom:1px solid #f3f4f6;vertical-align:top}
 tr:last-child td{border-bottom:none}
 .badge{display:inline-block;padding:1px 7px;border-radius:12px;
@@ -177,14 +184,18 @@ tr:last-child td{border-bottom:none}
      cursor:pointer;font-size:.82rem;font-weight:500;text-decoration:none;
      transition:opacity .15s}
 .btn:hover{opacity:.85}
+.btn:disabled{opacity:.55;cursor:not-allowed}
 .btn-blue{background:#3b82f6;color:#fff}
 .btn-green{background:#22c55e;color:#fff}
 .btn-red{background:#ef4444;color:#fff}
 .btn-gray{background:#e5e7eb;color:#374151}
 .btn-amber{background:#f59e0b;color:#fff}
+.btn-purple{background:#8b5cf6;color:#fff}
 .btn-sm{padding:3px 10px;font-size:.76rem}
 .stat{display:inline-block;margin-right:20px}
 .stat-n{font-size:1.6rem;font-weight:700;line-height:1}
+.stat-n a{color:inherit;text-decoration:none}
+.stat-n a:hover{text-decoration:underline}
 .stat-l{font-size:.75rem;color:#6b7280;margin-top:2px}
 nav{display:flex;align-items:center;gap:12px;margin-bottom:20px;
     padding-bottom:12px;border-bottom:1px solid #e5e7eb}
@@ -192,7 +203,7 @@ nav a{color:#6b7280;text-decoration:none;font-size:.85rem}
 nav a:hover{color:#111}
 nav .active{color:#111;font-weight:600}
 .pattern{font-family:monospace;font-size:.78rem;color:#374151;
-          word-break:break-all;max-width:500px}
+          word-break:break-all;max-width:440px}
 .ts{color:#9ca3af;font-size:.75rem;white-space:nowrap}
 .empty{text-align:center;padding:40px;color:#9ca3af}
 pre{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;
@@ -219,11 +230,46 @@ select{padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.85
          border-top-color:#3b82f6;border-radius:50%;animation:spin .6s linear infinite;
          vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+.filter-row th{padding:4px 6px}
+.filter-row select{font-size:.72rem;padding:2px 4px;border-radius:4px;
+                   border:1px solid #d1d5db;background:#fff;color:#374151;
+                   max-width:120px;width:100%}
+.tkt-id{font-size:.68rem;color:#9ca3af;font-family:monospace;display:block;
+        margin-top:2px;white-space:nowrap}
+.row-num{color:#d1d5db;font-size:.72rem;font-weight:600;white-space:nowrap}
+.active-filter{background:#eff6ff;border-color:#93c5fd!important}
 </style>
 """
 
+_FILTER_JS = """
+<script>
+function applyFilters() {
+  const p = new URLSearchParams(window.location.search);
+  ['fstatus','fserver','fsource','fcomponent'].forEach(k => {
+    const el = document.getElementById('f_'+k);
+    if (!el) return;
+    if (el.value) p.set(k, el.value); else p.delete(k);
+  });
+  // keep sort params
+  window.location.search = p.toString();
+}
+function applySort(col) {
+  const p = new URLSearchParams(window.location.search);
+  const cur = p.get('sort');
+  const dir = p.get('dir') || 'desc';
+  if (cur === col) {
+    p.set('dir', dir === 'desc' ? 'asc' : 'desc');
+  } else {
+    p.set('sort', col);
+    p.set('dir', 'desc');
+  }
+  window.location.search = p.toString();
+}
+</script>
+"""
 
-def _page(title: str, body: str) -> HTMLResponse:
+
+def _page(title: str, body: str, extra_js: str = "") -> HTMLResponse:
     now = datetime.datetime.now().strftime("%H:%M")
     nav = (
         '<nav>'
@@ -234,8 +280,10 @@ def _page(title: str, body: str) -> HTMLResponse:
         f'<span style="margin-left:auto;color:#9ca3af;font-size:.75rem">{now}</span>'
         '</nav>'
     )
-    return HTMLResponse(f"<!doctype html><html><head><title>{title}</title>{_CSS}</head>"
-                        f"<body><div class='wrap'>{nav}{body}</div></body></html>")
+    return HTMLResponse(
+        f"<!doctype html><html><head><title>{title}</title>{_CSS}</head>"
+        f"<body><div class='wrap'>{nav}{body}</div>{extra_js}</body></html>"
+    )
 
 
 def _badge(status: str, colors: dict | None = None) -> str:
@@ -274,64 +322,160 @@ def _confidence_bar(pct: int | None) -> str:
     )
 
 
+def _url_with(request: Request, **overrides) -> str:
+    """Build URL with current query params + overrides (values are URL-encoded)."""
+    params = dict(request.query_params)
+    params.update({k: v for k, v in overrides.items() if v is not None})
+    params = {k: v for k, v in params.items() if v != ""}
+    qs = urlencode(params)
+    return f"/admin?{qs}" if qs else "/admin"
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/admin", response_class=HTMLResponse)
-def dashboard():
+def dashboard(
+    request: Request,
+    fstatus: str = "",
+    fserver: str = "",
+    fsource: str = "",
+    fcomponent: str = "",
+    sort: str = "last_seen",
+    dir: str = "desc",
+):
     conn = _admin_conn()
 
+    # ── Stats (all, unfiltered) ───────────────────────────────────────────────
     total_open = conn.execute(
         "SELECT COUNT(*) FROM error_batches WHERE status='open'"
     ).fetchone()[0]
-    total_batches = conn.execute("SELECT COUNT(*) FROM error_batches").fetchone()[0]
+    total_investigating = conn.execute(
+        "SELECT COUNT(*) FROM error_batches WHERE status='investigating'"
+    ).fetchone()[0]
     total_resolved = conn.execute(
         "SELECT COUNT(*) FROM error_batches WHERE status='resolved'"
+    ).fetchone()[0]
+    total_wontfix = conn.execute(
+        "SELECT COUNT(*) FROM error_batches WHERE status='wontfix'"
     ).fetchone()[0]
     total_servers = conn.execute(
         "SELECT COUNT(DISTINCT server_token) FROM error_batches"
     ).fetchone()[0]
 
-    batches = conn.execute("""
+    # ── Distinct filter values for dropdowns ──────────────────────────────────
+    all_servers = [r[0] for r in conn.execute(
+        "SELECT DISTINCT server_token FROM error_batches ORDER BY server_token"
+    ).fetchall()]
+    all_sources = [r[0] for r in conn.execute(
+        "SELECT DISTINCT source FROM error_batches ORDER BY source"
+    ).fetchall()]
+    all_components = [r[0] for r in conn.execute(
+        "SELECT DISTINCT component FROM error_batches WHERE component IS NOT NULL ORDER BY component"
+    ).fetchall()]
+
+    # ── Filtered + sorted query ───────────────────────────────────────────────
+    where_clauses = []
+    params_list = []
+    if fstatus:
+        where_clauses.append("status=?")
+        params_list.append(fstatus)
+    if fserver:
+        where_clauses.append("server_token=?")
+        params_list.append(fserver)
+    if fsource:
+        where_clauses.append("source=?")
+        params_list.append(fsource)
+    if fcomponent:
+        where_clauses.append("component=?")
+        params_list.append(fcomponent)
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sort_col = "last_seen" if sort not in ("count", "last_seen") else sort
+    sort_dir = "DESC" if dir.lower() != "asc" else "ASC"
+
+    # Default ordering: open first, then investigating, then by chosen sort
+    order_sql = (
+        f"ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'investigating' THEN 1 ELSE 2 END,"
+        f" {sort_col} {sort_dir}"
+    )
+
+    batches = conn.execute(f"""
         SELECT id, batch_hash, server_token, source, component,
                pattern, severity, first_seen, last_seen, count, status
         FROM error_batches
-        ORDER BY
-            CASE status WHEN 'open' THEN 0 WHEN 'investigating' THEN 1 ELSE 2 END,
-            last_seen DESC
+        {where_sql}
+        {order_sql}
         LIMIT 200
-    """).fetchall()
+    """, params_list).fetchall()
     conn.close()
 
+    # ── Stats block (clickable) ───────────────────────────────────────────────
+    def _stat_link(value, label, color, filter_val):
+        href = _url_with(request, fstatus=filter_val, sort=sort, dir=dir)
+        active = " active-filter" if fstatus == filter_val else ""
+        return (
+            f'<div class="stat{active}" style="cursor:pointer" onclick="location.href=\'{href}\'">'
+            f'<div class="stat-n" style="color:{color}">'
+            f'<a href="{href}" style="color:inherit;text-decoration:none">{value}</a>'
+            f'</div>'
+            f'<div class="stat-l">{label}</div></div>'
+        )
+
     stats_html = (
-        f'<div style="display:flex;gap:24px;margin-bottom:20px">'
-        f'<div class="stat"><div class="stat-n" style="color:#ef4444">{total_open}</div>'
-        f'<div class="stat-l">Открытых</div></div>'
-        f'<div class="stat"><div class="stat-n" style="color:#f59e0b">'
-        f'{total_batches - total_open - total_resolved}</div>'
-        f'<div class="stat-l">В работе</div></div>'
-        f'<div class="stat"><div class="stat-n" style="color:#22c55e">{total_resolved}</div>'
-        f'<div class="stat-l">Решено</div></div>'
-        f'<div class="stat"><div class="stat-n">{total_servers}</div>'
+        f'<div style="display:flex;gap:24px;margin-bottom:20px;flex-wrap:wrap">'
+        + _stat_link(total_open, "Открытых", "#ef4444", "open")
+        + _stat_link(total_investigating, "В работе", "#f59e0b", "investigating")
+        + _stat_link(total_resolved, "Решено", "#22c55e", "resolved")
+        + _stat_link(total_wontfix, "Wontfix", "#9ca3af", "wontfix")
+        + f'<div class="stat"><div class="stat-n">{total_servers}</div>'
         f'<div class="stat-l">Серверов</div></div>'
-        f'</div>'
+        + (f'<div style="margin-left:auto;display:flex;align-items:center">'
+           f'<a href="/admin" class="btn btn-gray btn-sm">✕ Сбросить фильтры</a>'
+           f'</div>' if any([fstatus, fserver, fsource, fcomponent]) else "")
+        + f'</div>'
     )
 
     if not batches:
         body = (stats_html +
                 '<div class="card"><div class="empty">Ошибок нет ✅</div></div>')
-        return _page("Admin — Ошибки", body)
+        return _page("Admin — Ошибки", body, _FILTER_JS)
 
+    # ── Sort header helper ────────────────────────────────────────────────────
+    def _sort_th(label, col, align="left"):
+        cur_sort = sort == col
+        cls = f"sortable sort-{'desc' if dir=='desc' else 'asc'}" if cur_sort else "sortable"
+        return (f'<th class="{cls}" style="text-align:{align}" onclick="applySort(\'{col}\')">'
+                f'{label}</th>')
+
+    # ── Filter dropdown helper ────────────────────────────────────────────────
+    def _filter_select(fid, current, options, label_fn=None):
+        opts = f'<option value="">Все</option>'
+        for o in options:
+            sel = ' selected' if o == current else ''
+            lbl = label_fn(o) if label_fn else o
+            opts += f'<option value="{o}"{sel}>{lbl}</option>'
+        cls = ' class="active-filter"' if current else ''
+        return (f'<select id="f_{fid}"{cls} onchange="applyFilters()">{opts}</select>')
+
+    # ── Table rows ────────────────────────────────────────────────────────────
     rows = ""
-    for b in batches:
+    for idx, b in enumerate(batches, 1):
         srv_name = _server_name(b["server_token"])
         src_label = SOURCE_LABEL.get(b["source"], b["source"])
+        tkt_id = f"TKT-{b['id']:04d}"
         rows += (
             f'<tr>'
-            f'<td>{_badge(b["status"])}</td>'
+            f'<td><span class="row-num">#{idx}</span></td>'
+            f'<td>'
+            f'{_badge(b["status"])}'
+            f'<span class="tkt-id">{tkt_id}</span>'
+            f'</td>'
             f'<td><span style="font-size:.8rem;color:#374151">{srv_name}</span></td>'
             f'<td><span style="font-size:.75rem;color:#6b7280">{src_label}</span></td>'
             f'<td><span style="font-size:.75rem;color:#6b7280">{b["component"] or "—"}</span></td>'
-            f'<td><span class="pattern">{b["pattern"][:120]}{"…" if len(b["pattern"])>120 else ""}</span></td>'
+            f'<td><span class="pattern">{b["pattern"][:120]}{"…" if len(b["pattern"])>120 else ""}'
+            f'</span></td>'
             f'<td style="text-align:right"><span style="font-weight:600">{b["count"]}</span></td>'
             f'<td class="ts">{_ago(b["last_seen"])}</td>'
             f'<td><a href="/admin/batch/{b["id"]}" class="btn btn-blue btn-sm">→</a></td>'
@@ -341,11 +485,24 @@ def dashboard():
     table = (
         f'<div class="card" style="padding:0;overflow:hidden">'
         f'<table>'
-        f'<thead><tr>'
+        f'<thead>'
+        f'<tr>'
+        f'<th style="width:36px">#</th>'
         f'<th>Статус</th><th>Сервер</th><th>Источник</th><th>Компонент</th>'
-        f'<th>Паттерн</th><th style="text-align:right">Кол-во</th>'
-        f'<th>Последний раз</th><th></th>'
-        f'</tr></thead>'
+        f'<th>Паттерн</th>'
+        + _sort_th("Кол-во", "count", "right")
+        + _sort_th("Последний раз", "last_seen")
+        + f'<th></th>'
+        f'</tr>'
+        f'<tr class="filter-row" style="background:#f9fafb">'
+        f'<td></td>'
+        f'<td>{_filter_select("fstatus", fstatus, list(STATUS_COLOR.keys()))}</td>'
+        f'<td>{_filter_select("fserver", fserver, all_servers, _server_name)}</td>'
+        f'<td>{_filter_select("fsource", fsource, all_sources, lambda s: SOURCE_LABEL.get(s,s))}</td>'
+        f'<td>{_filter_select("fcomponent", fcomponent, all_components)}</td>'
+        f'<td colspan="4"></td>'
+        f'</tr>'
+        f'</thead>'
         f'<tbody>{rows}</tbody>'
         f'</table></div>'
     )
@@ -355,7 +512,7 @@ def dashboard():
         f'<p class="sub">Автоматически собраны с серверов и агентов</p>'
         f'{stats_html}{table}'
     )
-    return _page("Admin — Ошибки", body)
+    return _page("Admin — Ошибки", body, _FILTER_JS)
 
 
 @app.get("/admin/batch/{batch_id}", response_class=HTMLResponse)
@@ -385,6 +542,7 @@ def batch_detail(batch_id: int):
     b = dict(batch)
     srv_name = _server_name(b["server_token"])
     src_label = SOURCE_LABEL.get(b["source"], b["source"])
+    tkt_id = f"TKT-{b['id']:04d}"
 
     # Determine if "Расследовать" should be shown
     active_statuses = {"pending_approval", "approved", "executed"}
@@ -402,6 +560,7 @@ def batch_detail(batch_id: int):
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
         f'<a href="/admin" style="color:#6b7280;text-decoration:none;font-size:.85rem">'
         f'← Все ошибки</a>'
+        f'<span style="color:#d1d5db;font-size:.75rem;font-family:monospace">{tkt_id}</span>'
         f'</div>'
         f'<div class="card">'
         f'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
@@ -423,13 +582,34 @@ def batch_detail(batch_id: int):
            if b.get("recurrence") else '')
         + f'</div>'
         + (
-            f'<div style="margin-top:14px">'
-            f'<form method="post" action="/admin/batch/{batch_id}/investigate" style="display:inline">'
-            f'<button type="submit" class="btn btn-amber">'
+            f'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
+            # "Расследовать с Claude" — JS changes button to "Отправлено на изучение"
+            f'<form method="post" action="/admin/batch/{batch_id}/investigate" '
+            f'id="inv-form" style="display:inline">'
+            f'<button type="submit" class="btn btn-amber" id="inv-btn" '
+            f'onclick="this.disabled=true;this.innerHTML=\'<span class=&quot;spinner&quot;></span>'
+            f'Отправлено на изучение\';setTimeout(()=>document.getElementById(&quot;inv-form&quot;)'
+            f'.submit(),80);return false">'
             f'🔍 Расследовать с Claude</button>'
             f'</form>'
+            # "Запустить автоматически" — visible separately
+            f'<form method="post" action="/admin/batch/{batch_id}/autofix" style="display:inline">'
+            f'<button type="submit" class="btn btn-purple" '
+            f'onclick="return confirm(\'Запустить все действия из плана автоматически?\')">'
+            f'⚡ Запустить автоматически</button>'
+            f'</form>'
             f'</div>'
-            if can_investigate else ""
+            if can_investigate else (
+                # Show autofix button alone if there's an approved investigation
+                f'<div style="margin-top:14px">'
+                f'<form method="post" action="/admin/batch/{batch_id}/autofix" style="display:inline">'
+                f'<button type="submit" class="btn btn-purple" '
+                f'onclick="return confirm(\'Запустить все действия из плана автоматически?\')">'
+                f'⚡ Запустить автоматически</button>'
+                f'</form></div>'
+                if any(dict(i)["status"] == "approved" for i in investigations)
+                else ""
+            )
         )
         + f'</div>'
     )
@@ -512,18 +692,38 @@ def batch_detail(batch_id: int):
                     )
                 actions_html += '</span></div>'
 
-            # Approve/reject buttons for pending
+            # Approve/reject/reinvestigate/autofix buttons for pending
             approval_html = ""
             if inv_status == "pending_approval":
                 approval_html = (
                     f'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
+                    # Одобрить план
                     f'<form method="post" action="/admin/investigation/{d["id"]}/approve">'
                     f'<button type="submit" class="btn btn-green">'
                     f'✅ Одобрить план</button></form>'
+                    # Изучить еще раз (reject + reinvestigate)
+                    f'<form method="post" action="/admin/investigation/{d["id"]}/reinvestigate">'
+                    f'<button type="submit" class="btn btn-amber">'
+                    f'🔄 Изучить ещё раз</button></form>'
+                    # Отклонить
                     f'<form method="post" action="/admin/investigation/{d["id"]}/reject">'
                     f'<input type="hidden" name="reason" value="Отклонено администратором">'
                     f'<button type="submit" class="btn btn-gray">'
                     f'✗ Отклонить</button></form>'
+                    f'</div>'
+                )
+            elif inv_status == "approved":
+                # Show autofix button on the investigation card too
+                approval_html = (
+                    f'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
+                    f'<form method="post" action="/admin/batch/{batch_id}/autofix">'
+                    f'<button type="submit" class="btn btn-purple" '
+                    f'onclick="return confirm(\'Запустить действия автоматически?\')">'
+                    f'⚡ Запустить автоматически</button></form>'
+                    f'<form method="post" action="/admin/investigation/{d["id"]}/reject">'
+                    f'<input type="hidden" name="reason" value="Отклонено после одобрения">'
+                    f'<button type="submit" class="btn btn-gray btn-sm">'
+                    f'✗ Отменить</button></form>'
                     f'</div>'
                 )
 
@@ -605,7 +805,7 @@ def batch_detail(batch_id: int):
             )
 
     body = header + action_form + kb_html + inv_html
-    return _page(f"Ошибка #{batch_id}", body)
+    return _page(f"Ошибка #{batch_id} — {tkt_id}", body)
 
 
 @app.post("/admin/batch/{batch_id}/action")
@@ -709,6 +909,107 @@ async def batch_investigate(batch_id: int):
     return RedirectResponse(f"/admin/batch/{batch_id}", status_code=303)
 
 
+@app.post("/admin/batch/{batch_id}/autofix")
+async def batch_autofix(batch_id: int):
+    """Execute approved fix plan actions automatically without human approval."""
+    conn = _admin_conn()
+    # Find latest approved investigation for this batch
+    inv = conn.execute(
+        """SELECT * FROM investigations
+           WHERE batch_id=? AND status IN ('approved','pending_approval')
+           ORDER BY attempt DESC LIMIT 1""",
+        (batch_id,)
+    ).fetchone()
+    conn.close()
+
+    if not inv:
+        return RedirectResponse(f"/admin/batch/{batch_id}", status_code=303)
+
+    d = dict(inv)
+    fix_plan = json.loads(d["fix_plan"] or "{}") if d["fix_plan"] else {}
+    actions = fix_plan.get("actions", [])
+
+    results = []
+    has_failure = False
+
+    for action in actions:
+        atype = action.get("type", "")
+        params = action.get("params", {})
+        desc = action.get("description", "")
+
+        if atype == "restart_container":
+            container = params.get("container", "")
+            try:
+                r = subprocess.run(
+                    ["docker", "restart", container],
+                    capture_output=True, text=True, timeout=30
+                )
+                ok = r.returncode == 0
+                if not ok:
+                    has_failure = True
+                results.append({
+                    "type": atype, "container": container, "ok": ok,
+                    "output": (r.stdout + r.stderr)[:300],
+                })
+            except Exception as e:
+                has_failure = True
+                results.append({"type": atype, "container": container, "ok": False,
+                                "error": str(e)})
+
+        elif atype == "get_logs":
+            container = params.get("container", "")
+            lines = params.get("lines", 100)
+            try:
+                r = subprocess.run(
+                    ["docker", "logs", "--tail", str(lines), container],
+                    capture_output=True, text=True, timeout=30
+                )
+                results.append({
+                    "type": atype, "container": container, "ok": True,
+                    "output": (r.stdout + r.stderr)[:500],
+                })
+            except Exception as e:
+                has_failure = True
+                results.append({"type": atype, "container": container, "ok": False,
+                                "error": str(e)})
+
+        elif atype == "send_agent_command":
+            # Requires on-prem API call — mark as manual for now
+            results.append({
+                "type": atype, "ok": None,
+                "note": f"Требует ручного действия: {desc or params}",
+            })
+
+        elif atype == "manual":
+            results.append({
+                "type": atype, "ok": None,
+                "note": params.get("instruction", desc or "Ручное действие"),
+            })
+
+        else:
+            results.append({"type": atype, "ok": None, "note": "Неизвестный тип"})
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    exec_comment = json.dumps(results, ensure_ascii=False)
+
+    write_conn = sqlite3.connect(ADMIN_DB)
+    new_inv_status = "failed" if has_failure else "executed"
+    write_conn.execute(
+        """UPDATE investigations
+           SET status=?, approved_at=?, resolved_at=?, admin_comment=?
+           WHERE id=?""",
+        (new_inv_status, now, now, exec_comment, d["id"])
+    )
+    if not has_failure:
+        write_conn.execute(
+            "UPDATE error_batches SET status='resolved' WHERE id=?", (batch_id,)
+        )
+    write_conn.commit()
+    write_conn.close()
+
+    return RedirectResponse(f"/admin/batch/{batch_id}", status_code=303)
+
+
 @app.post("/admin/investigation/{inv_id}/approve")
 async def investigation_approve(inv_id: int):
     """Mark investigation as approved — admin acknowledges the plan."""
@@ -752,6 +1053,88 @@ async def investigation_reject(inv_id: int, reason: str = Form("Отклонен
     )
     conn.commit()
     conn.close()
+    return RedirectResponse(f"/admin/batch/{batch_id}", status_code=303)
+
+
+@app.post("/admin/investigation/{inv_id}/reinvestigate")
+async def investigation_reinvestigate(inv_id: int):
+    """Reject current plan and immediately trigger a new Claude investigation."""
+    conn = _admin_conn()
+    inv = conn.execute(
+        "SELECT batch_id FROM investigations WHERE id=?", (inv_id,)
+    ).fetchone()
+    if not inv:
+        conn.close()
+        return RedirectResponse("/admin", status_code=303)
+
+    batch_id = inv[0]
+
+    # Reject the current investigation
+    conn.execute(
+        "UPDATE investigations SET status='rejected', admin_comment='Требует повторного изучения' WHERE id=?",
+        (inv_id,)
+    )
+    conn.execute(
+        "UPDATE error_batches SET status='open' WHERE id=?", (batch_id,)
+    )
+    conn.commit()
+
+    # Load batch for new investigation
+    batch = conn.execute(
+        "SELECT * FROM error_batches WHERE id=?", (batch_id,)
+    ).fetchone()
+    kb_matches = conn.execute(
+        """SELECT root_cause, fix_applied, verified
+           FROM knowledge_base WHERE error_pattern LIKE ? LIMIT 3""",
+        ("%" + dict(batch)["pattern"][:50] + "%",)
+    ).fetchall()
+    max_attempt = conn.execute(
+        "SELECT COALESCE(MAX(attempt),0) FROM investigations WHERE batch_id=?",
+        (batch_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    attempt = max_attempt + 1
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    b = dict(batch)
+
+    # Call Claude for a fresh investigation
+    result = await _call_claude_investigation(b, list(kb_matches))
+
+    write_conn = sqlite3.connect(ADMIN_DB)
+    if "error" in result:
+        write_conn.execute(
+            """INSERT INTO investigations (batch_id, attempt, root_cause, status, created_at)
+               VALUES (?,?,?,?,?)""",
+            (batch_id, attempt,
+             f"Ошибка анализа: {result.get('error', '')} — {result.get('raw', '')}",
+             "error", now)
+        )
+    else:
+        fix_plan = result.get("fix_plan", {})
+        write_conn.execute(
+            """INSERT INTO investigations
+               (batch_id, attempt, root_cause, confidence_pct, fix_plan,
+                verification_criteria, rollback_plan, impact, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                batch_id, attempt,
+                result.get("root_cause", ""),
+                result.get("confidence_pct"),
+                json.dumps(fix_plan, ensure_ascii=False),
+                result.get("verification_criteria", ""),
+                result.get("rollback_plan", ""),
+                result.get("impact", ""),
+                "pending_approval",
+                now,
+            )
+        )
+        write_conn.execute(
+            "UPDATE error_batches SET status='investigating' WHERE id=?", (batch_id,)
+        )
+    write_conn.commit()
+    write_conn.close()
+
     return RedirectResponse(f"/admin/batch/{batch_id}", status_code=303)
 
 
