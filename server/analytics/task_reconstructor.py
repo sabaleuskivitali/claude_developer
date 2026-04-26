@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -17,7 +18,31 @@ _GAP_PRIMARY_MS  = 180_000   # 3 min: confirms completion_signal
 _GAP_FALLBACK_MS = 900_000   # 15 min: boundary even without commit
 
 # case_id scoring weights
-_WEIGHTS = {"vision_case_id": 10, "window_regex": 7, "mru_document": 4}
+_WEIGHTS = {"vision_case_id": 10, "window_regex": 7, "title_regex": 6, "mru_document": 4, "file_event": 3}
+
+# п.3 — Серверный regex для извлечения case_id из window_title
+_TITLE_PATTERNS = [
+    re.compile(r'[Нн]акладн[ая]\s*[№#]?\s*(\d+)'),
+    re.compile(r'[Зз]аказ[:\s]+[№#]?\s*(\d{4,})'),
+    re.compile(r'[Сс]чёт\s*[№#]?\s*(\d{4,})'),
+    re.compile(r'[Кк]витанци[яи]\s*[№#]?\s*(\d{4,})'),
+    re.compile(r'[Дд]окумент\s*[№#]?\s*(\d{4,})'),
+    re.compile(r'[Тт]икет[:\s#]+(\d+)'),
+    re.compile(r'[Зз]аявк[аи][:\s#]+(\d+)'),
+    re.compile(r'(?:ID|id)[:\s]+([A-Za-z0-9_-]{4,})'),
+    re.compile(r'#(\d{4,})'),
+    re.compile(r'\b(\d{6,})\b'),  # 6+ цифр — достаточно специфично
+]
+
+
+def _extract_case_id_from_title(title: str) -> Optional[str]:
+    if not title:
+        return None
+    for pattern in _TITLE_PATTERNS:
+        m = pattern.search(title)
+        if m:
+            return m.group(1)
+    return None
 
 
 @dataclass
@@ -48,8 +73,6 @@ def _is_boundary(
     if gap_ms > _GAP_FALLBACK_MS:
         return True
     return False
-    # task_label change without completion_signal → NOT a boundary
-    # app switch alone → NOT a boundary
 
 
 def _score_candidate(
@@ -66,7 +89,6 @@ def _score_candidate(
     return base + proximity + freq + cross
 
 
-
 async def _build_task_session(
     conn: asyncpg.Connection,
     group: list[_VisualEvent],
@@ -80,11 +102,9 @@ async def _build_task_session(
     start_ts = first.synced_ts
     end_ts   = last.synced_ts
 
-    # Prefer most common task_label in the group
     labels = [e.vision_task_label for e in group if e.vision_task_label]
     task_label = mode_or_default(labels, "unknown")
 
-    # avg_cognitive_demand from vision_results for these events
     event_ids = [e.event_id for e in group]
     cog_rows = await conn.fetch(
         """
@@ -100,7 +120,6 @@ async def _build_task_session(
         [r["cognitive_demand"] for r in cog_rows], "MEDIUM"
     )
 
-    # All events for this session in [start_ts, end_ts]
     all_sess = session_events.get(first.session_id, [])
     window   = [e for e in all_sess if start_ts <= e["synced_ts"] <= end_ts]
 
@@ -117,7 +136,41 @@ async def _build_task_session(
 
     process_names = list({e["process_name"] for e in window if e.get("process_name")})
 
-    # case_id scoring: ±120s window
+    # п.4 — Window layer stats
+    text_committed  = sum(1 for e in window if e["event_type"] == "TextCommitted")
+    value_changed   = sum(1 for e in window if e["event_type"] == "ValueChanged")
+    app_switches    = sum(1 for e in window if e["event_type"] == "AppSwitch")
+    invoked         = sum(1 for e in window if e["event_type"] == "Invoked")
+    clipboard_paste = sum(1 for e in window if e["event_type"] == "ClipboardPaste")
+    input_events_count = text_committed + value_changed + invoked
+    unique_apps     = len({e["process_name"] for e in window if e.get("process_name")})
+    window_stats    = {
+        "text_committed":  text_committed,
+        "value_changed":   value_changed,
+        "app_switches":    app_switches,
+        "invoked":         invoked,
+        "clipboard_paste": clipboard_paste,
+    }
+
+    # п.5 — Applogs correlation
+    applogs_window = [e for e in window if e.get("layer") == "applogs"]
+    applogs_errors = sum(
+        1 for e in applogs_window
+        if e.get("log_level") in ("Error", "Warning", "Critical")
+    )
+    # Sample up to 5 error messages
+    error_msgs = [
+        {"level": e.get("log_level"), "msg": (e.get("raw_message") or "")[:200]}
+        for e in applogs_window
+        if e.get("log_level") in ("Error", "Warning", "Critical")
+    ][:5]
+    applogs_summary = {
+        "total": len(applogs_window),
+        "errors": applogs_errors,
+        "sample_errors": error_msgs,
+    } if applogs_window else None
+
+    # case_id: ±120s window
     wide_start = start_ts - 120_000
     wide_end   = end_ts   + 120_000
     wide       = [e for e in all_sess if wide_start <= e["synced_ts"] <= wide_end]
@@ -132,38 +185,54 @@ async def _build_task_session(
             vision_counts[e.vision_case_id] = vision_counts.get(e.vision_case_id, 0) + 1
     for value, count in vision_counts.items():
         score = _score_candidate(value, "vision_case_id", 0, count, best_vision)
-        candidates.append({
-            "value": value, "type": "inferred_id",
-            "source": "vision_case_id", "score": round(score, 2),
-        })
+        candidates.append({"value": value, "type": "inferred_id", "source": "vision_case_id", "score": round(score, 2)})
 
-    # Source 2: regex case_id from window_title
+    # Source 2: case_id от агента (из window_title regex на клиенте)
     regex_counts: dict[str, int] = {}
     for e in group:
         if e.case_id:
             regex_counts[e.case_id] = regex_counts.get(e.case_id, 0) + 1
     for value, count in regex_counts.items():
         score = _score_candidate(value, "window_regex", 0, count, best_vision)
-        candidates.append({
-            "value": value, "type": "inferred_id",
-            "source": "window_regex", "score": round(score, 2),
-        })
+        candidates.append({"value": value, "type": "inferred_id", "source": "window_regex", "score": round(score, 2)})
 
-    # Source 3: MRU / LNK document_name
-    mru_counts: dict[str, int] = {}
+    # п.3 — Source 3: серверный regex из window_title
+    title_counts: dict[str, int] = {}
+    for e in group:
+        extracted = _extract_case_id_from_title(e.window_title)
+        if extracted:
+            title_counts[extracted] = title_counts.get(extracted, 0) + 1
+    # также из window events в ±120s окне
     for e in wide:
-        if (
-            e["event_type"] in ("RecentDocumentOpened", "LnkCreated")
-            and e.get("document_name")
-        ):
-            v = e["document_name"]
-            mru_counts[v] = mru_counts.get(v, 0) + 1
-    for value, count in mru_counts.items():
-        score = _score_candidate(value, "mru_document", 0, count, best_vision)
-        candidates.append({
-            "value": value, "type": "document_name",
-            "source": "mru_document", "score": round(score, 2),
-        })
+        if e.get("layer") == "window" and e.get("window_title"):
+            extracted = _extract_case_id_from_title(e["window_title"])
+            if extracted:
+                title_counts[extracted] = title_counts.get(extracted, 0) + 1
+    for value, count in title_counts.items():
+        score = _score_candidate(value, "title_regex", 0, count, best_vision)
+        candidates.append({"value": value, "type": "inferred_id", "source": "title_regex", "score": round(score, 2)})
+
+    # п.2 — Source 4: document_name из MRU/LNK + FileWrite/FileCreate
+    doc_counts: dict[str, int] = {}
+    for e in wide:
+        if not e.get("document_name"):
+            continue
+        if e["event_type"] in ("RecentDocumentOpened", "LnkCreated"):
+            source_key = "mru_document"
+        elif e["event_type"] in ("FileWrite", "FileCreate"):
+            source_key = "file_event"
+        else:
+            continue
+        v = e["document_name"]
+        doc_counts[v] = doc_counts.get(v, 0) + 1
+    for value, count in doc_counts.items():
+        # Pick source weight: prefer MRU, fallback file_event
+        src = "mru_document" if any(
+            e.get("document_name") == value and e["event_type"] in ("RecentDocumentOpened", "LnkCreated")
+            for e in wide
+        ) else "file_event"
+        score = _score_candidate(value, src, 0, count, best_vision)
+        candidates.append({"value": value, "type": "document_name", "source": src, "score": round(score, 2)})
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     best_case_id = (
@@ -189,7 +258,25 @@ async def _build_task_session(
         "has_error":            has_error,
         "event_sequence":       event_sequence,
         "avg_cognitive_demand": avg_cognitive,
+        # новые поля
+        "input_events_count":   input_events_count,
+        "app_switches":         app_switches,
+        "unique_apps":          unique_apps,
+        "window_stats":         window_stats,
+        "applogs_errors":       applogs_errors,
+        "applogs_summary":      applogs_summary,
     }
+
+
+_MIGRATION_SQL = """
+ALTER TABLE task_sessions
+    ADD COLUMN IF NOT EXISTS input_events_count INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS app_switches        INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS unique_apps         INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS window_stats        JSONB,
+    ADD COLUMN IF NOT EXISTS applogs_errors      INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS applogs_summary     JSONB;
+"""
 
 
 async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int:
@@ -197,7 +284,8 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
     cutoff_ms = int((time.time() - lookback_hours * 3600) * 1000)
 
     async with pool.acquire() as conn:
-        # Visual events that have been processed by Vision
+        await conn.execute(_MIGRATION_SQL)
+
         visual_rows = await conn.fetch(
             """
             SELECT event_id, session_id, user_id, machine_id,
@@ -218,25 +306,24 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
 
         session_ids = list({str(r["session_id"]) for r in visual_rows})
 
-        # All events for these sessions (for metadata + case_id window)
+        # п.4,5 — расширенный запрос: добавляем window_title, log_level, raw_message
         all_rows = await conn.fetch(
             """
             SELECT session_id, synced_ts, event_type, layer,
-                   process_name, document_name
+                   process_name, document_name,
+                   window_title, log_level, raw_message
             FROM events
             WHERE session_id = ANY($1)
               AND synced_ts >= $2
             ORDER BY session_id, synced_ts
             """,
             session_ids,
-            cutoff_ms - 120_000,  # extend for ±120s case_id window
+            cutoff_ms - 120_000,
         )
 
-        # IdleStart timestamps per session
         idle_rows = await conn.fetch(
             """
-            SELECT session_id, synced_ts
-            FROM events
+            SELECT session_id, synced_ts FROM events
             WHERE session_id = ANY($1)
               AND event_type = 'IdleStart'
               AND synced_ts >= $2
@@ -245,7 +332,6 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
             cutoff_ms,
         )
 
-        # Build in-memory indexes
         session_events: dict[str, list[dict]] = {}
         for r in all_rows:
             sid = str(r["session_id"])
@@ -255,7 +341,6 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
         for r in idle_rows:
             idle_ts.setdefault(str(r["session_id"]), []).append(r["synced_ts"])
 
-        # Group visual events by session
         visual_by_session: dict[str, list[_VisualEvent]] = {}
         for r in visual_rows:
             ev = _VisualEvent(
@@ -273,7 +358,6 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
             )
             visual_by_session.setdefault(str(r["session_id"]), []).append(ev)
 
-        # Segment each agent-session into task_sessions and write
         total = 0
         for session_id, events in visual_by_session.items():
             groups: list[list[_VisualEvent]] = []
@@ -304,11 +388,23 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
                         start_ts, end_ts, duration_min,
                         screenshot_count, event_count,
                         case_id, case_id_candidates, process_names,
-                        has_undo, has_error, event_sequence, avg_cognitive_demand
+                        has_undo, has_error, event_sequence, avg_cognitive_demand,
+                        input_events_count, app_switches, unique_apps,
+                        window_stats, applogs_errors, applogs_summary
                     ) VALUES (
-                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                        $17,$18,$19,$20,$21,$22
                     )
-                    ON CONFLICT (session_id) DO NOTHING
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        task_label           = EXCLUDED.task_label,
+                        case_id              = EXCLUDED.case_id,
+                        case_id_candidates   = EXCLUDED.case_id_candidates,
+                        input_events_count   = EXCLUDED.input_events_count,
+                        app_switches         = EXCLUDED.app_switches,
+                        unique_apps          = EXCLUDED.unique_apps,
+                        window_stats         = EXCLUDED.window_stats,
+                        applogs_errors       = EXCLUDED.applogs_errors,
+                        applogs_summary      = EXCLUDED.applogs_summary
                     """,
                     ts["session_id"], ts["user_id"], ts["machine_id"],
                     ts["task_label"], ts["start_ts"], ts["end_ts"],
@@ -318,6 +414,10 @@ async def reconstruct_tasks(pool: asyncpg.Pool, lookback_hours: int = 48) -> int
                     ts["process_names"],
                     ts["has_undo"], ts["has_error"],
                     ts["event_sequence"], ts["avg_cognitive_demand"],
+                    ts["input_events_count"], ts["app_switches"], ts["unique_apps"],
+                    json.dumps(ts["window_stats"]) if ts["window_stats"] else None,
+                    ts["applogs_errors"],
+                    json.dumps(ts["applogs_summary"]) if ts["applogs_summary"] else None,
                 )
                 total += 1
 
