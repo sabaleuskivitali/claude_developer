@@ -19,6 +19,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 ADMIN_DB  = Path("/app/data/admin.db")
 USERS_DB  = Path("/app/data/users.db")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_CLOUD_VERSION = Path("/app/VERSION").read_text().strip() if Path("/app/VERSION").exists() else "unknown"
 
 # ── Labels & colours ──────────────────────────────────────────────────────────
 
@@ -438,6 +439,9 @@ def _page(title: str, body: str) -> HTMLResponse:
     nav = (
         '<nav>'
         '<span style="font-weight:700;color:#111;font-size:.95rem">⚙ Seamlean Admin</span>'
+        f'<span style="font-size:.72rem;color:#6b7280;background:#f3f4f6;'
+        f'border:1px solid #e5e7eb;border-radius:4px;padding:2px 7px;margin-left:4px">'
+        f'cloud&nbsp;v{_CLOUD_VERSION}</span>'
         '<a href="/admin">Ошибки</a>'
         '<a href="/admin/servers">Серверы</a>'
         '<a href="/admin/kb">База знаний</a>'
@@ -892,67 +896,65 @@ def batch_detail(batch_id: int):
                     )
                 actions_html += '</span></div>'
 
-            # Buttons: show on pending_approval, approved, AND rejected
-            btns = ""
-            if inv_status in ("pending_approval", "rejected"):
-                btns = (
-                    f'<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start">'
-                    # Одобрить план
-                    f'<form method="post" action="/admin/investigation/{inv_id}/approve">'
-                    f'<button type="submit" class="btn btn-green btn-sm"'
-                    f' title="Одобрить план: подтвердить что план корректный. После одобрения можно запустить автоматически">'
-                    f'✅ Одобрить план</button></form>'
-                    # Изучить ещё раз
-                    f'<button class="btn btn-amber btn-sm"'
-                    f' title="Изучить ещё раз: отклонить текущий план и запустить новый анализ Claude с вашими пожеланиями"'
-                    f' onclick="showInlineForm(\'reinv-{inv_id}\')">'
-                    f'🔄 Изучить ещё раз</button>'
-                    # Отклонить
-                    f'<button class="btn btn-gray btn-sm"'
-                    f' title="Отклонить план: пометить как отклонённый без повторного анализа"'
-                    f' onclick="showInlineForm(\'reject-{inv_id}\')">'
-                    f'✗ Отклонить</button>'
-                    f'</div>'
-                    # Reinvestigate form
-                    f'<div id="reinv-{inv_id}" class="inline-form">'
-                    f'<form method="post" action="/admin/investigation/{inv_id}/reinvestigate">'
-                    f'<label>Пожелания для нового анализа (необязательно):</label>'
-                    f'<textarea name="wishes" rows="2"'
-                    f' placeholder="Например: сосредоточься на сетевых проблемах..."></textarea>'
-                    f'<div style="margin-top:6px">'
-                    f'<button type="submit" class="btn btn-amber btn-sm"'
-                    f' onclick="submitWithLoading(this,\'Отправлено на изучение\')">'
-                    f'⏳ Отправить на изучение</button>'
-                    f'<button type="button" class="btn btn-gray btn-sm"'
-                    f' style="margin-left:6px"'
-                    f' onclick="showInlineForm(\'reinv-{inv_id}\')">Отмена</button>'
-                    f'</div></form></div>'
-                    # Reject form
-                    f'<div id="reject-{inv_id}" class="inline-form">'
-                    f'<form method="post" action="/admin/investigation/{inv_id}/reject">'
-                    f'<label>Причина отклонения (необязательно):</label>'
-                    f'<textarea name="reason" rows="2"'
-                    f' placeholder="Например: план слишком рискованный..."></textarea>'
-                    f'<div style="margin-top:6px">'
-                    f'<button type="submit" class="btn btn-gray btn-sm">Подтвердить отклонение</button>'
-                    f'<button type="button" class="btn btn-gray btn-sm"'
-                    f' style="margin-left:6px"'
-                    f' onclick="showInlineForm(\'reject-{inv_id}\')">Отмена</button>'
-                    f'</div></form></div>'
-                )
-            elif inv_status == "approved":
-                btns = (
-                    f'<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">'
+            # Buttons: always show Одобрить/Изучить/Отклонить for any investigation attempt.
+            # If approved — also show the autorun button above the standard buttons.
+            autorun_btn = ""
+            if inv_status == "approved":
+                autorun_btn = (
+                    f'<div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap">'
                     f'<form method="post" action="/admin/batch/{batch_id}/autofix">'
                     f'<button type="submit" class="btn btn-purple btn-sm"'
                     f' title="Выполнить одобренный план автоматически"'
                     f' onclick="return confirm(\'Выполнить план автоматически?\')">'
                     f'⚡ Запустить автоматически</button></form>'
-                    f'<form method="post" action="/admin/investigation/{inv_id}/reject">'
-                    f'<input type="hidden" name="reason" value="Отменено после одобрения">'
-                    f'<button type="submit" class="btn btn-gray btn-sm">✗ Отменить</button>'
-                    f'</form></div>'
+                    f'</div>'
                 )
+            btns = (
+                autorun_btn
+                + f'<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start">'
+                # Одобрить план
+                + f'<form method="post" action="/admin/investigation/{inv_id}/approve">'
+                + f'<button type="submit" class="btn btn-green btn-sm"'
+                + f' title="Одобрить план: подтвердить что план корректный. После одобрения можно запустить автоматически">'
+                + f'✅ Одобрить план</button></form>'
+                # Изучить ещё раз
+                + f'<button class="btn btn-amber btn-sm"'
+                + f' title="Изучить ещё раз: отклонить текущий план и запустить новый анализ Claude с вашими пожеланиями"'
+                + f' onclick="showInlineForm(\'reinv-{inv_id}\')">'
+                + f'🔄 Изучить ещё раз</button>'
+                # Отклонить
+                + f'<button class="btn btn-gray btn-sm"'
+                + f' title="Отклонить план: пометить как отклонённый без повторного анализа"'
+                + f' onclick="showInlineForm(\'reject-{inv_id}\')">'
+                + f'✗ Отклонить</button>'
+                + f'</div>'
+                # Reinvestigate form
+                + f'<div id="reinv-{inv_id}" class="inline-form">'
+                + f'<form method="post" action="/admin/investigation/{inv_id}/reinvestigate">'
+                + f'<label>Пожелания для нового анализа (необязательно):</label>'
+                + f'<textarea name="wishes" rows="2"'
+                + f' placeholder="Например: сосредоточься на сетевых проблемах..."></textarea>'
+                + f'<div style="margin-top:6px">'
+                + f'<button type="submit" class="btn btn-amber btn-sm"'
+                + f' onclick="submitWithLoading(this,\'Отправлено на изучение\')">'
+                + f'⏳ Отправить на изучение</button>'
+                + f'<button type="button" class="btn btn-gray btn-sm"'
+                + f' style="margin-left:6px"'
+                + f' onclick="showInlineForm(\'reinv-{inv_id}\')">Отмена</button>'
+                + f'</div></form></div>'
+                # Reject form
+                + f'<div id="reject-{inv_id}" class="inline-form">'
+                + f'<form method="post" action="/admin/investigation/{inv_id}/reject">'
+                + f'<label>Причина отклонения (необязательно):</label>'
+                + f'<textarea name="reason" rows="2"'
+                + f' placeholder="Например: план слишком рискованный..."></textarea>'
+                + f'<div style="margin-top:6px">'
+                + f'<button type="submit" class="btn btn-gray btn-sm">Подтвердить отклонение</button>'
+                + f'<button type="button" class="btn btn-gray btn-sm"'
+                + f' style="margin-left:6px"'
+                + f' onclick="showInlineForm(\'reject-{inv_id}\')">Отмена</button>'
+                + f'</div></form></div>'
+            )
 
             inv_html += (
                 f'<div class="card inv-card {inv_class}">'
