@@ -164,8 +164,31 @@ ActivityEvent schema         — поля только добавлять, не 
   Маскировка PII в заголовках окон перед отправкой
 
 Приоритет 3: Resource Governor
-  CPU агента > 5% → throttle
-  System RAM < 500MB → pause screenshots
+  Шаг 1 — ResourceGovernor.cs (новый BackgroundService)
+    Цикл каждые 5 секунд
+    CPU: proc.Refresh() → delta(TotalProcessorTime) / (elapsed × ProcessorCount) × 100
+    RAM: GlobalMemoryStatusEx P/Invoke → dwMemoryLoad (0–100%)
+    Гистерезис: 2 сэмпла подряд для входа/выхода из режима (избегает дёрганья)
+    Публикует: static bool IsThrottled (CPU), static bool IsPaused (RAM)
+
+  Шаг 2 — AgentSettings.cs
+    CpuThrottlePercent = 5.0   (Microsoft Defender min = 5%, практика: 3–10%)
+    MemLoadPausePercent = 85   (dwMemoryLoad > 85% → 15% свободно, работает на 4/8/16 ГБ)
+    ThrottleConsecutiveSamples = 2
+
+  Шаг 3 — ScreenshotWorker.cs
+    При IsPaused → пропускать все capture (periodic, baseline, triggered)
+
+  Шаг 4 — UiAutomationCapture.cs
+    При IsThrottled → пропускать TriggerCapture (само событие пишем, скриншот нет)
+
+  Шаг 5 — PerformanceMonitor.cs
+    Добавить в payload: cpu_pct, mem_load_pct, cpu_throttled, mem_paused
+
+  Почему такие пороги:
+    CPU 5% с гистерезисом: непрерывный агент, не пакетный сканер; Citrix WEM режет на 8–15%
+    RAM через dwMemoryLoad: фиксированный MB некорректен (500 МБ = 12% на 4ГБ, но 6% на 8ГБ)
+    GlobalMemoryStatusEx вместо PerformanceCounter: нет PDH-инициализации (~400мс), нет привилегий
 
 Приоритет 4: Hotkey Detector
   Global keyboard hook для Ctrl+S, Ctrl+Z, F5, Alt+Tab
