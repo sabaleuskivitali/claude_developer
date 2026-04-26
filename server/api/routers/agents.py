@@ -72,7 +72,7 @@ async def list_agents(request: Request):
             WHERE relname = 'events'
         )
         SELECT mc.machine_id,
-               ROUND(mc.cnt::FLOAT * ts.total_bytes / ts.estimated_rows / 1048576.0, 1) AS data_mb
+               ROUND((mc.cnt * ts.total_bytes / NULLIF(ts.estimated_rows, 0) / 1048576.0)::NUMERIC, 1) AS data_mb
         FROM machine_counts mc, table_stats ts
     """)
 
