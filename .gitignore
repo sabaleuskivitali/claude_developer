@@ -1,6 +1,9 @@
 # Private key — NEVER commit
 tools/extension.pem
 
+# Claude session state — не коммитить
+**/.claude/session_status.md
+
 # Build artifacts
 build/
 **/bin/
