@@ -200,6 +200,32 @@ MIGRATIONS = [
         auto_update BOOLEAN NOT NULL DEFAULT TRUE
     );
     """,
+    # admin_state: key-value store for server-side admin metadata (watermarks, config)
+    """
+    CREATE TABLE IF NOT EXISTS admin_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    # LISTEN/NOTIFY: fire 'layer_error' channel on every LayerError INSERT
+    # cloud-admin listens on this channel via the server's heartbeat extension
+    # and pushes errors to cloud immediately instead of waiting for next heartbeat
+    """
+    CREATE OR REPLACE FUNCTION _notify_layer_error() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+        IF NEW.event_type = 'LayerError' THEN
+            PERFORM pg_notify('layer_error', NEW.id::TEXT);
+        END IF;
+        RETURN NEW;
+    END;
+    $$;
+
+    DROP TRIGGER IF EXISTS trg_layer_error_notify ON events;
+    CREATE TRIGGER trg_layer_error_notify
+        AFTER INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION _notify_layer_error();
+    """,
 ]
 
 

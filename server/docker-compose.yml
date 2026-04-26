@@ -62,6 +62,7 @@ services:
       - api_runtime:/app/runtime
       - ${UPDATE_PACKAGES_DIR:-/home/nubes/updates}:/updates:ro
       - /etc/avahi/services:/etc/avahi/services  # mDNS: avahi-daemon on host picks this up
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # admin: read container logs + restart
     depends_on:
       postgres:
         condition: service_healthy
