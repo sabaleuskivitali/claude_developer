@@ -27,7 +27,7 @@ _ssl_ctx_server.check_hostname = False
 _ssl_ctx_server.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
-from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap
+from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, meetings
 
 def _read_version() -> str:
     for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
@@ -146,6 +146,7 @@ async def lifespan(app: FastAPI):
     app.state.event_queue = db.EventQueue(app.state.db)
     app.state.event_queue.start()
     await storage.ensure_bucket()
+    await storage.ensure_audio_bucket()
     await _ensure_bootstrap(app.state.db)
     async with app.state.db.acquire() as conn:
         await conn.execute("""
@@ -219,6 +220,7 @@ app.include_router(updates.router)
 app.include_router(agents.router)
 app.include_router(etl.router)
 app.include_router(bootstrap.router)
+app.include_router(meetings.router)
 
 
 @app.get("/health")

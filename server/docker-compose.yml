@@ -38,9 +38,7 @@ services:
       retries: 5
 
   api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
+    image: ghcr.io/sabaleuskivitali/claude_developer/server-api:${SERVER_VERSION:-latest}
     container_name: ${SERVER_NAME}_api
     restart: unless-stopped
     network_mode: host
@@ -69,9 +67,7 @@ services:
         condition: service_healthy
 
   worker:
-    build:
-      context: .
-      dockerfile: analytics/Dockerfile
+    image: ghcr.io/sabaleuskivitali/claude_developer/server-worker:${SERVER_VERSION:-latest}
     container_name: ${SERVER_NAME}_worker
     restart: unless-stopped
     network_mode: host
@@ -111,6 +107,10 @@ services:
       ofelia.job-exec.fte.schedule:        "0 3 * * *"
       ofelia.job-exec.fte.container:       "${SERVER_NAME}_worker"
       ofelia.job-exec.fte.command:         "python run_pipeline.py fte --lookback-days 30"
+
+      ofelia.job-exec.meetings.schedule:   "0 */3 * * *"
+      ofelia.job-exec.meetings.container:  "${SERVER_NAME}_worker"
+      ofelia.job-exec.meetings.command:    "python run_pipeline.py meetings --batch-size 5"
 
   nginx:
     image: nginx:alpine

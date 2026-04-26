@@ -3,10 +3,11 @@ Pipeline coordinator. Run modes:
   vision       — process one batch of screenshots via Claude Vision
   reconstruct  — segment vision-done events into task_sessions
   fte          — aggregate task_sessions into fte_report
-  all          — vision (until queue empty) + reconstruct + fte
+  meetings     — transcribe meetings (whisper) + summarize (Claude)
+  all          — vision + reconstruct + fte + meetings
 
 Usage:
-  python run_pipeline.py [vision|reconstruct|fte|all] [--batch-size N] [--lookback-hours N]
+  python run_pipeline.py [vision|reconstruct|fte|meetings|all] [--batch-size N] [--lookback-hours N]
 """
 import argparse
 import asyncio
@@ -19,8 +20,10 @@ import asyncpg
 from minio import Minio
 
 from fte_builder import build_fte_report
+from meeting_summarizer import summarize_meetings
 from task_reconstructor import reconstruct_tasks
 from vision_worker import process_vision_batch
+from whisper_worker import process_meetings_batch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,11 +68,22 @@ async def run_fte(pool: asyncpg.Pool, lookback_days: int) -> int:
     return n
 
 
+async def run_meetings(pool: asyncpg.Pool, batch_size: int) -> int:
+    n = await process_meetings_batch(pool, batch_size)
+    total = n
+    while n > 0:
+        n = await process_meetings_batch(pool, batch_size)
+        total += n
+    n_summ = await summarize_meetings(pool)
+    log.info("meetings: transcribed=%d summarized=%d", total, n_summ)
+    return total
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "mode",
-        choices=["vision", "reconstruct", "fte", "all"],
+        choices=["vision", "reconstruct", "fte", "meetings", "all"],
         nargs="?",
         default="all",
     )
@@ -95,6 +109,9 @@ async def main() -> None:
 
         if args.mode in ("fte", "all"):
             await run_fte(pool, args.lookback_days)
+
+        if args.mode in ("meetings", "all"):
+            await run_meetings(pool, args.batch_size)
 
     finally:
         await pool.close()

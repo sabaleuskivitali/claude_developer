@@ -269,6 +269,47 @@ MIGRATIONS = [
         UNIQUE (report_date, user_id, machine_id, task_label)
     );
     """,
+    # Meeting recordings pipeline
+    """
+    CREATE TABLE IF NOT EXISTS meeting_recordings (
+        meeting_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        machine_id      TEXT NOT NULL,
+        user_id         TEXT NOT NULL,
+        started_at      BIGINT NOT NULL,
+        ended_at        BIGINT,
+        duration_sec    FLOAT,
+        mic_path        TEXT,
+        loopback_path   TEXT,
+        process_name    TEXT,
+        window_title    TEXT,
+        trigger         TEXT,
+        whisper_done    BOOLEAN NOT NULL DEFAULT FALSE,
+        whisper_skipped BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_machine
+        ON meeting_recordings (machine_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mr_whisper_todo
+        ON meeting_recordings (whisper_done, whisper_skipped)
+        WHERE whisper_done = FALSE AND whisper_skipped = FALSE;
+
+    CREATE TABLE IF NOT EXISTS meeting_transcripts (
+        id             BIGSERIAL PRIMARY KEY,
+        meeting_id     UUID NOT NULL REFERENCES meeting_recordings(meeting_id) ON DELETE CASCADE,
+        run_id         UUID NOT NULL,
+        whisper_model  TEXT NOT NULL,
+        language       TEXT,
+        transcript     TEXT,
+        segments       JSONB,
+        summary        TEXT,
+        action_items   JSONB,
+        case_id        TEXT,
+        processed_at   TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (meeting_id, run_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mt_meeting
+        ON meeting_transcripts (meeting_id, processed_at DESC);
+    """,
 ]
 
 

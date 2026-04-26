@@ -14,9 +14,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
+      packages: write
 
     steps:
     - name: Checkout
@@ -47,12 +48,39 @@ jobs:
         pip install ruff --quiet
         ruff check server/ --ignore E501 || true
 
-    - name: Validate docker-compose
+    - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build Docker images
-      working-directory: server
-      run: docker compose build
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push server-api
+      uses: docker/build-push-action@v6
+      with:
+        context: server
+        file: server/api/Dockerfile
+        push: true
+        tags: |
+          ghcr.io/sabaleuskivitali/claude_developer/server-api:${{ env.VERSION }}
+          ghcr.io/sabaleuskivitali/claude_developer/server-api:latest
+        cache-from: type=gha,scope=server-api
+        cache-to:   type=gha,scope=server-api,mode=max
+
+    - name: Build and push server-worker
+      uses: docker/build-push-action@v6
+      with:
+        context: server
+        file: server/analytics/Dockerfile
+        push: true
+        tags: |
+          ghcr.io/sabaleuskivitali/claude_developer/server-worker:${{ env.VERSION }}
+          ghcr.io/sabaleuskivitali/claude_developer/server-worker:latest
+        cache-from: type=gha,scope=server-worker
+        cache-to:   type=gha,scope=server-worker,mode=max
 
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/server/v')
@@ -64,6 +92,10 @@ jobs:
           ## Server v${{ env.VERSION }}
 
           **Build:** ${{ github.run_number }} | **Commit:** ${{ github.sha }}
+
+          **Images:**
+          - `ghcr.io/sabaleuskivitali/claude_developer/server-api:${{ env.VERSION }}`
+          - `ghcr.io/sabaleuskivitali/claude_developer/server-worker:${{ env.VERSION }}`
         generate_release_notes: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,8 +103,10 @@ jobs:
     - name: Deploy to server
       if: startsWith(github.ref, 'refs/tags/server/v')
       env:
-        SERVER_SSH_KEY:  ${{ secrets.SERVER_SSH_KEY }}
+        SERVER_SSH_KEY:   ${{ secrets.SERVER_SSH_KEY }}
         SERVER_SUDO_PASS: ${{ secrets.SERVER_SUDO_PASS }}
+        GHCR_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+        VERSION:          ${{ env.VERSION }}
       run: |
         echo "$SERVER_SSH_KEY" > /tmp/deploy_key
         chmod 600 /tmp/deploy_key
@@ -81,5 +115,14 @@ jobs:
           -o StrictHostKeyChecking=no \
           -o ConnectTimeout=15 \
           nubes@195.222.86.67 \
-          "echo '${SERVER_SUDO_PASS}' | sudo -S bash -c 'cd /opt/seamlean/server && git pull && docker compose up -d --build --remove-orphans'"
+          "echo '${SERVER_SUDO_PASS}' | sudo -S bash -c '
+            set -e
+            cd /opt/seamlean/server
+            git pull
+            grep -v ^SERVER_VERSION .env > .env.tmp && mv .env.tmp .env
+            echo \"SERVER_VERSION=${VERSION}\" >> .env
+            echo \"${GHCR_TOKEN}\" | docker login ghcr.io -u sabaleuskivitali --password-stdin
+            docker compose pull
+            docker compose up -d --remove-orphans
+          '"
         rm -f /tmp/deploy_key
