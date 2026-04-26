@@ -247,6 +247,22 @@ def _s(v: str | None) -> str | None:
     return v.replace("\x00", "") if v else v
 
 
+def _sanitize(obj: object) -> object:
+    """Recursively strip null bytes from all strings in a dict/list/str.
+
+    json.dumps converts Python \\x00 → \\u0000 in the JSON string.
+    PostgreSQL JSONB explicitly forbids \\u0000 ('Escape sequence "\\0" is invalid').
+    Must sanitize BEFORE json.dumps, not after.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "")
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 def _event_to_record(e: EventIn) -> tuple:
     return (
         str(e.event_id), str(e.session_id), _s(e.machine_id), _s(e.user_id),
@@ -257,7 +273,7 @@ def _event_to_record(e: EventIn) -> tuple:
         _s(e.case_id), _s(e.screenshot_path), e.screenshot_dhash, _s(e.capture_reason),
         _s(e.log_source), _s(e.log_level), _s(e.raw_message), _s(e.message_hash),
         _s(e.document_path), _s(e.document_name),
-        json.dumps(e.payload, default=str).replace("\x00", ""),
+        json.dumps(_sanitize(e.payload), default=str),
     )
 
 
