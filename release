@@ -1,8 +1,21 @@
 #!/bin/bash
 set -e
 
-COMPONENT=${1:?Usage: ./release <agent|server|cloud> ["commit message"]}
-MSG=${2:-""}
+COMPONENT=${1:?Usage: ./release <agent|server|cloud> ["commit message"|stable]}
+ARG2=${2:-""}
+ARG3=${3:-""}
+
+# Определяем флаг stable и сообщение коммита
+STABLE=false
+MSG=""
+for arg in "$ARG2" "$ARG3"; do
+  if [ "$arg" = "stable" ]; then
+    STABLE=true
+  elif [ -n "$arg" ]; then
+    MSG="$arg"
+  fi
+done
+
 BRANCH="work/$COMPONENT"
 
 WORKTREES=(
@@ -17,14 +30,13 @@ if [ -z "$WORKTREE" ]; then
   exit 1
 fi
 
-# --- Определяем версию по последнему тегу ---
-LAST_TAG=$(git tag -l "$COMPONENT/v*" | sort -V | tail -1)
+# --- Определяем версию по последнему обычному тегу (без -stable) ---
+LAST_TAG=$(git tag -l "$COMPONENT/v*" | grep -v '\-stable' | sort -V | tail -1)
 
 if [ -z "$LAST_TAG" ]; then
   VERSION="0.1.0"
   echo "ℹ️  Тегов нет, начинаем с v$VERSION"
 else
-  # Извлекаем X.Y.Z из "component/vX.Y.Z"
   LAST_VERSION="${LAST_TAG#$COMPONENT/v}"
   IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
   PATCH=$((PATCH + 1))
@@ -33,6 +45,7 @@ else
 fi
 
 TAG="$COMPONENT/v$VERSION"
+STABLE_TAG="$COMPONENT/v$VERSION-stable"
 
 # --- Пишем VERSION в worktree ---
 echo "$VERSION" > "$WORKTREE/$COMPONENT/VERSION"
@@ -61,5 +74,15 @@ echo "🏷️  Tagging $TAG..."
 git tag "$TAG"
 git push origin "$TAG"
 
-echo ""
-echo "✅ $TAG — CI собирает, Release появится на GitHub"
+# --- Stable тег (если запрошен) ---
+if [ "$STABLE" = true ]; then
+  echo "🔒 Tagging $STABLE_TAG..."
+  git tag "$STABLE_TAG"
+  git push origin "$STABLE_TAG"
+  echo ""
+  echo "✅ $STABLE_TAG — GitHub Release создан, OTA уведомит агентов"
+else
+  echo ""
+  echo "✅ $TAG — CI собирает артефакт"
+  echo "   Для публичного релиза: ./release $COMPONENT stable"
+fi
