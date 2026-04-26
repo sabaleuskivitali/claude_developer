@@ -134,6 +134,7 @@ jobs:
             echo \"SERVER_VERSION=${VERSION}\" >> .env
             echo \"${GHCR_TOKEN}\" | docker login ghcr.io -u sabaleuskivitali --password-stdin
             docker compose pull
+            docker ps --filter name=vs-service-01 --filter status=paused -q | xargs -r docker unpause
             docker compose up -d --force-recreate --remove-orphans
           '"
         rm -f /tmp/deploy_key
