@@ -56,11 +56,24 @@ async def list_agents(request: Request):
         GROUP BY machine_id, layer
     """, one_hour_ago, one_day_ago)
 
+    # Estimate data_mb per machine using event counts + avg row size from pg stats.
+    # Avoids a full-table SUM(octet_length(...)) scan that causes 5s timeout in cloud _api().
     data_rows = await request.app.state.db.fetch("""
-        SELECT machine_id,
-               ROUND(SUM(octet_length(payload::text)) / 1048576.0, 1) AS data_mb
-        FROM events
-        GROUP BY machine_id
+        WITH machine_counts AS (
+            SELECT machine_id, COUNT(*) AS cnt
+            FROM events
+            GROUP BY machine_id
+        ),
+        table_stats AS (
+            SELECT
+                GREATEST(reltuples::BIGINT, 1) AS estimated_rows,
+                pg_total_relation_size('events') AS total_bytes
+            FROM pg_class
+            WHERE relname = 'events'
+        )
+        SELECT mc.machine_id,
+               ROUND(mc.cnt::FLOAT * ts.total_bytes / ts.estimated_rows / 1048576.0, 1) AS data_mb
+        FROM machine_counts mc, table_stats ts
     """)
 
     data_index: dict[str, float] = {r["machine_id"]: float(r["data_mb"]) for r in data_rows}

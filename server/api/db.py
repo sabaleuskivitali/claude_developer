@@ -310,6 +310,10 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_mt_meeting
         ON meeting_transcripts (meeting_id, processed_at DESC);
     """,
+    # Performance: index on loaded_at for time-bounded queries (health checks, admin metrics)
+    """
+    CREATE INDEX IF NOT EXISTS idx_loaded_at ON events (loaded_at DESC);
+    """,
 ]
 
 

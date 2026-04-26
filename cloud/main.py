@@ -439,7 +439,7 @@ def _api(server_url: str, api_key: str, path: str):
             f"{server_url.rstrip('/')}{path}",
             headers={"X-Api-Key": api_key, "User-Agent": "Seamlean-Cloud/1.0"},
         )
-        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=5) as r:
+        with urllib.request.urlopen(req, context=_ssl_ctx, timeout=12) as r:
             return json.loads(r.read())
     except Exception:
         return None
