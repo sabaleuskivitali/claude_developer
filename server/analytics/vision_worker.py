@@ -141,7 +141,7 @@ async def _dhash_filter(
 
 def _load_from_minio(minio_client: Minio, path: str) -> Optional[bytes]:
     try:
-        response = minio_client.get_object(BUCKET, path)
+        response = minio_client.get_object(BUCKET, path.replace("\\", "/"))
         return response.read()
     except S3Error as e:
         if e.code == "NoSuchKey":
