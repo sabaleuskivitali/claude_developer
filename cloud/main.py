@@ -34,6 +34,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 DB_PATH = Path("/app/data/users.db")
+ADMIN_DB_PATH = Path("/app/data/admin.db")
 
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
@@ -81,6 +82,71 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    conn.close()
+
+
+def init_admin_db():
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS error_batches (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_hash   TEXT UNIQUE NOT NULL,
+        server_token TEXT NOT NULL,
+        source       TEXT NOT NULL,
+        component    TEXT,
+        pattern      TEXT NOT NULL,
+        severity     TEXT DEFAULT 'error',
+        first_seen   TEXT NOT NULL,
+        last_seen    TEXT NOT NULL,
+        count        INTEGER DEFAULT 1,
+        status       TEXT DEFAULT 'open',
+        created_at   TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS investigations (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id              INTEGER REFERENCES error_batches(id),
+        attempt               INTEGER DEFAULT 1,
+        root_cause            TEXT,
+        confidence_pct        INTEGER,
+        evidence              TEXT,
+        fix_plan              TEXT,
+        verification_criteria TEXT,
+        rollback_plan         TEXT,
+        impact                TEXT,
+        status                TEXT DEFAULT 'pending_approval',
+        admin_comment         TEXT,
+        created_at            TEXT DEFAULT (datetime('now')),
+        approved_at           TEXT,
+        resolved_at           TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_base (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        error_pattern    TEXT NOT NULL,
+        component        TEXT,
+        root_cause       TEXT NOT NULL,
+        fix_applied      TEXT,
+        verified         INTEGER DEFAULT 0,
+        recurrence_count INTEGER DEFAULT 0,
+        investigation_id INTEGER,
+        created_at       TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS dep_nodes (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        name     TEXT UNIQUE NOT NULL,
+        type     TEXT,
+        metadata TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS dep_edges (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_node      INTEGER REFERENCES dep_nodes(id),
+        to_node        INTEGER REFERENCES dep_nodes(id),
+        relation       TEXT,
+        confidence_pct INTEGER DEFAULT 10,
+        evidence_count INTEGER DEFAULT 1,
+        first_seen     TEXT DEFAULT (datetime('now')),
+        last_seen      TEXT DEFAULT (datetime('now')),
+        UNIQUE(from_node, to_node, relation)
+    )""")
+    conn.commit()
     conn.close()
 
 
@@ -133,6 +199,7 @@ def _migrate_servers_table():
 
 
 init_db()
+init_admin_db()
 _migrate_servers_table()
 
 
@@ -1678,6 +1745,13 @@ async def cloud_server_heartbeat(request: Request):
         )
     conn.commit()
     conn.close()
+
+    # Store errors in admin.db for cloud-admin panel
+    errors_list   = data.get("errors", [])
+    docker_errors = data.get("docker_errors", [])
+    if errors_list or docker_errors:
+        _ingest_errors(token, errors_list, docker_errors)
+
     return {"ok": True}
 
 
@@ -1870,6 +1944,64 @@ async def installer_bootstrap(request: Request):
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Re-sign failed: {e}"})
+
+
+# ── Error ingestion helpers ───────────────────────────────────────────────────
+
+def _normalize_error(msg: str) -> str:
+    """Remove volatile parts (UUIDs, timestamps, numbers) to get stable pattern."""
+    msg = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<UUID>', msg, flags=re.I)
+    msg = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*', '<TS>', msg)
+    msg = re.sub(r'0x[0-9a-fA-F]+', '<ADDR>', msg)
+    msg = re.sub(r'\b\d+\b', '<N>', msg)
+    return msg[:300].strip()
+
+
+def _ingest_errors(server_token: str, errors: list, docker_errors: list) -> None:
+    """Write incoming errors from server heartbeat into admin.db error_batches."""
+    import logging as _logging
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    try:
+        for err in errors:
+            raw = (err.get("raw_message") or
+                   err.get("element_name") or
+                   json.dumps(err.get("payload", {}))[:300])
+            pattern   = _normalize_error(str(raw))
+            component = err.get("layer") or "unknown"
+            batch_hash = hashlib.sha256(
+                f"{server_token}:pg:{component}:{pattern}".encode()
+            ).hexdigest()[:24]
+            conn.execute(
+                """INSERT INTO error_batches
+                       (batch_hash, server_token, source, component, pattern, first_seen, last_seen)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(batch_hash) DO UPDATE SET
+                       last_seen=excluded.last_seen, count=count+1""",
+                (batch_hash, server_token, "postgresql", component, pattern, now, now),
+            )
+
+        for line in docker_errors:
+            line = line.strip()
+            if not line:
+                continue
+            pattern   = _normalize_error(line[:300])
+            batch_hash = hashlib.sha256(
+                f"{server_token}:docker:{pattern}".encode()
+            ).hexdigest()[:24]
+            conn.execute(
+                """INSERT INTO error_batches
+                       (batch_hash, server_token, source, component, pattern, first_seen, last_seen)
+                   VALUES (?,?,'docker','api_container',?,?,?)
+                   ON CONFLICT(batch_hash) DO UPDATE SET
+                       last_seen=excluded.last_seen, count=count+1""",
+                (batch_hash, server_token, pattern, now, now),
+            )
+        conn.commit()
+    except Exception as exc:
+        _logging.getLogger(__name__).warning("_ingest_errors: %s", exc)
+    finally:
+        conn.close()
 
 
 # ── Robots / Health ───────────────────────────────────────────────────────────
