@@ -27,7 +27,9 @@ _ssl_ctx_server.check_hostname = False
 _ssl_ctx_server.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
-from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, meetings
+from routers import events, errors, commands, screenshots, updates, agents, etl, bootstrap, admin, extension
+
+_SERVER_NAME = os.environ.get("SERVER_NAME", "server")
 
 def _read_version() -> str:
     for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
@@ -101,6 +103,130 @@ def _current_cached_version() -> str | None:
     return None
 
 
+# ── Admin telemetry helpers ───────────────────────────────────────────────────
+
+async def _get_watermark(pool) -> int:
+    """Return last event id already forwarded to cloud-admin."""
+    row = await pool.fetchrow(
+        "SELECT value FROM admin_state WHERE key='last_forwarded_error_id'"
+    )
+    return int(row["value"]) if row else 0
+
+
+async def _set_watermark(pool, event_id: int) -> None:
+    await pool.execute(
+        """INSERT INTO admin_state (key, value, updated_at)
+           VALUES ('last_forwarded_error_id', $1, NOW())
+           ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()""",
+        str(event_id),
+    )
+
+
+async def _fetch_pending_errors(pool, limit: int = 100) -> list[dict]:
+    """Fetch LayerError events not yet forwarded to cloud-admin."""
+    watermark = await _get_watermark(pool)
+    rows = await pool.fetch(
+        """SELECT id, machine_id, event_type, layer, window_title,
+                  element_type, element_name, raw_message,
+                  loaded_at, payload
+           FROM events
+           WHERE event_type = 'LayerError' AND id > $1
+           ORDER BY id ASC
+           LIMIT $2""",
+        watermark, limit,
+    )
+    return [
+        {
+            "id": r["id"],
+            "machine_id": r["machine_id"],
+            "layer": r["layer"],
+            "window_title": r["window_title"],
+            "element_type": r["element_type"],
+            "element_name": r["element_name"],
+            "raw_message": r["raw_message"],
+            "loaded_at": r["loaded_at"].isoformat() if r["loaded_at"] else None,
+            "payload": (r["payload"] if isinstance(r["payload"], dict)
+                        else (json.loads(r["payload"]) if r["payload"] else {})),
+        }
+        for r in rows
+    ]
+
+
+def _get_docker_errors(container: str, since_minutes: int = 10) -> list[str]:
+    """Read error lines from a container's logs via docker.sock (no extra deps)."""
+    import http.client as _hc
+    import socket as _sock
+    import time as _time
+
+    sock_path = "/var/run/docker.sock"
+    if not os.path.exists(sock_path):
+        return []
+
+    class _UnixHTTP(_hc.HTTPConnection):
+        def connect(self):
+            self.sock = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            self.sock.settimeout(5)
+            self.sock.connect(sock_path)
+
+    try:
+        since_ts = int(_time.time()) - since_minutes * 60
+        path = f"/containers/{container}/logs?stdout=1&stderr=1&since={since_ts}&tail=500"
+        conn = _UnixHTTP("localhost")
+        conn.request("GET", path, headers={"Host": "localhost"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return []
+        raw = resp.read()
+        # Strip 8-byte docker log frame headers
+        lines, i = [], 0
+        while i + 8 <= len(raw):
+            size = int.from_bytes(raw[i + 4:i + 8], "big")
+            i += 8
+            chunk = raw[i:i + size].decode("utf-8", errors="replace")
+            i += size
+            lines.extend(chunk.splitlines())
+        if not lines:
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+        keywords = ("error", "exception", "traceback", "critical", "fatal")
+        return [ln for ln in lines if any(kw in ln.lower() for kw in keywords)][:200]
+    except Exception as exc:
+        logger.debug("_get_docker_errors %s: %s", container, exc)
+        return []
+
+
+async def _push_errors_to_cloud(pool) -> None:
+    """Collect pending LayerErrors + docker logs and POST to cloud-admin/ingest."""
+    if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
+        return
+    try:
+        errors_data = await _fetch_pending_errors(pool)
+        docker_errors = await asyncio.to_thread(
+            _get_docker_errors, f"{_SERVER_NAME}_api", 10
+        )
+        if not errors_data and not docker_errors:
+            return
+
+        payload = {
+            "type": "errors",
+            "errors": errors_data,
+            "docker_errors": docker_errors,
+        }
+        await asyncio.to_thread(
+            _http_post_json,
+            f"{_CLOUD_URL}/api/v1/cloud/heartbeat",
+            payload,
+            _CLOUD_SERVER_TOKEN,
+        )
+        if errors_data:
+            await _set_watermark(pool, errors_data[-1]["id"])
+        logger.info(
+            "pushed %d layer_errors + %d docker_errors to cloud",
+            len(errors_data), len(docker_errors),
+        )
+    except Exception as exc:
+        logger.debug("_push_errors_to_cloud: %s", exc)
+
+
 async def _catchup_loop():
     if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
         return
@@ -123,7 +249,7 @@ async def _catchup_loop():
         await asyncio.sleep(86400)
 
 
-async def _heartbeat_loop():
+async def _heartbeat_loop(pool):
     if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
         return
     version = _read_version()
@@ -140,13 +266,58 @@ async def _heartbeat_loop():
         await asyncio.sleep(300)
 
 
+async def _error_push_loop(pool):
+    """Event-driven push: LISTEN on 'layer_error' PostgreSQL channel.
+
+    On each NOTIFY (fired by trg_layer_error_notify trigger on INSERT),
+    collect all pending LayerErrors + recent docker error logs and POST
+    to cloud-admin/ingest immediately.  Falls back to 60-second polling
+    in case a NOTIFY is lost (network blip, pool reconnect, etc.).
+    """
+    if not _CLOUD_URL or not _CLOUD_SERVER_TOKEN:
+        return
+
+    import asyncpg as _asyncpg
+
+    notify_event = asyncio.Event()
+
+    def _on_notify(conn, pid, channel, payload):
+        notify_event.set()
+
+    conn = None
+    while True:
+        try:
+            conn = await _asyncpg.connect(os.environ["POSTGRES_DSN"])
+            await conn.add_listener("layer_error", _on_notify)
+            logger.info("_error_push_loop: listening on 'layer_error' channel")
+
+            while True:
+                try:
+                    await asyncio.wait_for(notify_event.wait(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    pass  # 60s fallback poll
+                notify_event.clear()
+                await _push_errors_to_cloud(pool)
+
+        except Exception as exc:
+            logger.warning("_error_push_loop reconnecting: %s", exc)
+            await asyncio.sleep(15)
+        finally:
+            if conn and not conn.is_closed():
+                try:
+                    await conn.remove_listener("layer_error", _on_notify)
+                    await conn.close()
+                except Exception:
+                    pass
+            conn = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = await db.create_pool()
     app.state.event_queue = db.EventQueue(app.state.db)
     app.state.event_queue.start()
     await storage.ensure_bucket()
-    await storage.ensure_audio_bucket()
     await _ensure_bootstrap(app.state.db)
     async with app.state.db.acquire() as conn:
         await conn.execute("""
@@ -156,11 +327,13 @@ async def lifespan(app: FastAPI):
                 updated_at  BIGINT NOT NULL
             )
         """)
-    catchup_task   = asyncio.create_task(_catchup_loop())
-    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    catchup_task    = asyncio.create_task(_catchup_loop())
+    heartbeat_task  = asyncio.create_task(_heartbeat_loop(app.state.db))
+    error_push_task = asyncio.create_task(_error_push_loop(app.state.db))
     yield
     catchup_task.cancel()
     heartbeat_task.cancel()
+    error_push_task.cancel()
     await app.state.event_queue.stop()
     await app.state.db.close()
 
@@ -220,7 +393,8 @@ app.include_router(updates.router)
 app.include_router(agents.router)
 app.include_router(etl.router)
 app.include_router(bootstrap.router)
-app.include_router(meetings.router)
+app.include_router(admin.router)
+app.include_router(extension.router)
 
 
 @app.get("/health")

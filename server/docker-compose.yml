@@ -55,10 +55,14 @@ services:
       CLOUD_SERVER_TOKEN: ${CLOUD_SERVER_TOKEN:-}
       SERVER_URL:         ${SERVER_URL:-}
       SERVER_NAME:        ${SERVER_NAME:-server}
+      EXTENSION_ID:       ${EXTENSION_ID:-}
+      EXTENSION_VERSION:  ${EXTENSION_VERSION:-1.0.0}
+      EXTENSION_CRX_PATH: /app/extension/extension.crx
     volumes:
       - api_certs:/certs
       - api_runtime:/app/runtime
       - ${UPDATE_PACKAGES_DIR:-/home/nubes/updates}:/updates:ro
+      - ${EXTENSION_DIR:-/home/nubes/extension}:/app/extension:ro
       - /etc/avahi/services:/etc/avahi/services  # mDNS: avahi-daemon on host picks this up
       - /var/run/docker.sock:/var/run/docker.sock:ro  # admin: read container logs + restart
     depends_on:

