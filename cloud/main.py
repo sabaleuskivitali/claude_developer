@@ -99,8 +99,14 @@ def init_admin_db():
         last_seen    TEXT NOT NULL,
         count        INTEGER DEFAULT 1,
         status       TEXT DEFAULT 'open',
+        recurrence   INTEGER DEFAULT 0,
         created_at   TEXT DEFAULT (datetime('now'))
     )""")
+    # Migration: add recurrence column if it doesn't exist yet
+    try:
+        conn.execute("ALTER TABLE error_batches ADD COLUMN recurrence INTEGER DEFAULT 0")
+    except Exception:
+        pass  # column already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS investigations (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
         batch_id              INTEGER REFERENCES error_batches(id),
@@ -1986,7 +1992,16 @@ def _ingest_errors(server_token: str, errors: list, docker_errors: list) -> None
                        (batch_hash, server_token, source, component, pattern, first_seen, last_seen)
                    VALUES (?,?,?,?,?,?,?)
                    ON CONFLICT(batch_hash) DO UPDATE SET
-                       last_seen=excluded.last_seen, count=count+1""",
+                       last_seen=excluded.last_seen,
+                       count=count+1,
+                       status=CASE
+                           WHEN status IN ('resolved','wontfix') THEN 'open'
+                           ELSE status
+                       END,
+                       recurrence=CASE
+                           WHEN status IN ('resolved','wontfix') THEN COALESCE(recurrence,0)+1
+                           ELSE COALESCE(recurrence,0)
+                       END""",
                 (batch_hash, server_token, "postgresql", component, pattern, now, now),
             )
 
@@ -2003,7 +2018,16 @@ def _ingest_errors(server_token: str, errors: list, docker_errors: list) -> None
                        (batch_hash, server_token, source, component, pattern, first_seen, last_seen)
                    VALUES (?,?,'docker','api_container',?,?,?)
                    ON CONFLICT(batch_hash) DO UPDATE SET
-                       last_seen=excluded.last_seen, count=count+1""",
+                       last_seen=excluded.last_seen,
+                       count=count+1,
+                       status=CASE
+                           WHEN status IN ('resolved','wontfix') THEN 'open'
+                           ELSE status
+                       END,
+                       recurrence=CASE
+                           WHEN status IN ('resolved','wontfix') THEN COALESCE(recurrence,0)+1
+                           ELSE COALESCE(recurrence,0)
+                       END""",
                 (batch_hash, server_token, pattern, now, now),
             )
         conn.commit()
