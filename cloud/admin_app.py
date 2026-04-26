@@ -10,6 +10,9 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlencode
 
+import ssl
+import urllib.request as _urllib_request
+
 import anthropic as _anthropic
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -65,6 +68,22 @@ SOURCE_TOOLTIP = {
 }
 DEFAULT_STATUSES = "open,investigating"   # фильтр по умолчанию
 _AGENT_LAYERS = {"window", "visual", "system", "applogs", "browser", "agent"}
+
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
+
+
+def _api_call(server_url: str, api_key: str, path: str):
+    try:
+        req = _urllib_request.Request(
+            f"{server_url.rstrip('/')}{path}",
+            headers={"X-Api-Key": api_key, "User-Agent": "Seamlean-Cloud/1.0"},
+        )
+        with _urllib_request.urlopen(req, context=_ssl_ctx, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
 
 # ── Claude investigation ──────────────────────────────────────────────────────
 
@@ -1217,8 +1236,12 @@ async def investigation_reinvestigate(inv_id: int, wishes: str = Form("")):
 
 @app.get("/admin/servers", response_class=HTMLResponse)
 def servers_list():
+    # All registered servers from users.db
+    all_servers = _all_servers_info()
+
+    # Error stats per server_token from admin.db
     conn = _admin_conn()
-    server_stats = conn.execute("""
+    rows = conn.execute("""
         SELECT server_token,
                COUNT(*) AS total,
                SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_cnt,
@@ -1228,53 +1251,60 @@ def servers_list():
     """).fetchall()
     conn.close()
 
-    srv_infos = {s.get("server_token") or s.get("api_key", ""): s
-                 for s in _all_servers_info()}
+    err_stats: dict = {r["server_token"]: dict(r) for r in rows}
 
-    if not server_stats:
+    if not all_servers:
         body = ('<h1>Серверы</h1>'
-                '<div class="card"><div class="empty">Нет данных о серверах</div></div>')
+                '<div class="card"><div class="empty">Нет зарегистрированных серверов</div></div>')
         return _page("Admin — Серверы", body)
 
     cards = ""
-    for row in server_stats:
-        d = dict(row)
-        tok = d["server_token"]
-        name = _server_name(tok)
-        info = srv_infos.get(tok, {})
+    for info in all_servers:
+        tok = info.get("server_token", "")
+        name = info.get("server_name") or _server_name(tok)
         status = info.get("status", "unknown")
         last_seen = info.get("last_seen", "")
+        tunnel_url = info.get("tunnel_url", "") or ""
         status_dot = (
             '<span style="color:#22c55e">●</span>' if status == "active" else
-            '<span style="color:#ef4444">●</span>'
+            '<span style="color:#9ca3af">●</span>'
         )
+        es = err_stats.get(tok, {})
+        open_cnt = es.get("open_cnt", 0) or 0
+        inv_cnt  = es.get("inv_cnt", 0) or 0
+        total    = es.get("total", 0) or 0
+        last_err = es.get("last_err")
+        open_color = "#ef4444" if open_cnt > 0 else "#9ca3af"
+        inv_color  = "#f59e0b" if inv_cnt > 0 else "#9ca3af"
         cards += (
+            f'<a href="/admin/servers/{tok}" style="text-decoration:none;color:inherit">'
             f'<div class="srv-card">'
             f'<div>'
             f'<div style="font-weight:600;font-size:.95rem">{status_dot} {name}</div>'
             f'<div style="font-size:.75rem;color:#6b7280;margin-top:2px">'
-            f'{info.get("tunnel_url","") or tok[:20]+"…"}'
+            f'{tunnel_url or tok[:24]+"…"}'
             f'</div>'
-            f'<div style="font-size:.75rem;color:#9ca3af">Последняя ошибка: {_ago(d["last_err"])}'
-            + (f' · Last seen: {_ago(last_seen)}' if last_seen else "")
+            f'<div style="font-size:.75rem;color:#9ca3af">'
+            + (f'Последняя ошибка: {_ago(last_err)}' if last_err else 'Ошибок нет')
+            + (f' · Last seen: {_ago(last_seen)}' if last_seen else '')
             + f'</div></div>'
             f'<div style="display:flex;gap:12px;align-items:center">'
             f'<div style="text-align:center">'
-            f'<div style="font-size:1.2rem;font-weight:700;color:#ef4444">{d["open_cnt"]}</div>'
+            f'<div style="font-size:1.2rem;font-weight:700;color:{open_color}">{open_cnt}</div>'
             f'<div style="font-size:.7rem;color:#6b7280">Открытых</div></div>'
             f'<div style="text-align:center">'
-            f'<div style="font-size:1.2rem;font-weight:700;color:#f59e0b">{d["inv_cnt"]}</div>'
+            f'<div style="font-size:1.2rem;font-weight:700;color:{inv_color}">{inv_cnt}</div>'
             f'<div style="font-size:.7rem;color:#6b7280">В работе</div></div>'
             f'<div style="text-align:center">'
-            f'<div style="font-size:1.2rem;font-weight:700">{d["total"]}</div>'
+            f'<div style="font-size:1.2rem;font-weight:700">{total}</div>'
             f'<div style="font-size:.7rem;color:#6b7280">Всего</div></div>'
-            f'<a href="/admin/servers/{tok}" class="btn btn-blue btn-sm">→</a>'
-            f'</div></div>'
+            f'<span class="btn btn-blue btn-sm">→</span>'
+            f'</div></div></a>'
         )
 
     body = (
         f'<h1>Серверы</h1>'
-        f'<p class="sub">Зарегистрированные on-prem серверы с ошибками</p>'
+        f'<p class="sub">Все зарегистрированные on-prem серверы</p>'
         + cards
     )
     return _page("Admin — Серверы", body)
@@ -1283,14 +1313,6 @@ def servers_list():
 @app.get("/admin/servers/{server_token}", response_class=HTMLResponse)
 def server_detail(server_token: str):
     conn = _admin_conn()
-    # Errors grouped by component for this server
-    component_stats = conn.execute("""
-        SELECT component, COUNT(*) AS cnt,
-               SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_cnt,
-               MAX(last_seen) AS last_err
-        FROM error_batches WHERE server_token=?
-        GROUP BY component ORDER BY open_cnt DESC, cnt DESC
-    """, (server_token,)).fetchall()
     # All error batches for this server
     batches = conn.execute("""
         SELECT id, component, pattern, status, count, last_seen
@@ -1302,66 +1324,258 @@ def server_detail(server_token: str):
 
     srv_name = _server_name(server_token)
     info = _server_info(server_token)
+    tunnel_url = info.get("tunnel_url", "") or ""
+    api_key = info.get("api_key", "") or ""
+    srv_status = info.get("status", "unknown")
 
-    # Group batches by component
+    # Group all batches by component
     by_comp: dict = defaultdict(list)
     for b in batches:
         by_comp[b["component"] or "unknown"].append(dict(b))
 
-    # Build accordion sections per component
-    sections = ""
-    for comp_row in component_stats:
-        comp = comp_row["component"] or "unknown"
-        cnt = comp_row["cnt"]
-        open_cnt = comp_row["open_cnt"]
-        is_agent = comp in _AGENT_LAYERS
-        comp_type = "Агент" if is_agent else "Сервер"
-        color = "#ef4444" if open_cnt > 0 else "#22c55e"
-        uid = f"comp-{comp or 'unknown'}"
-        rows = ""
-        for b in by_comp[comp]:
-            rows += (
-                f'<tr>'
-                f'<td><span class="row-num" style="font-size:.7rem">#{b["id"]}</span>'
-                f'<span class="tkt-id">{_tkt(b["id"])}</span></td>'
-                f'<td>{_badge(b["status"])}</td>'
-                f'<td><span class="pattern">'
-                f'{b["pattern"][:100]}{"…" if len(b["pattern"])>100 else ""}'
-                f'</span></td>'
-                f'<td style="text-align:right;font-weight:600">{b["count"]}</td>'
-                f'<td class="ts">{_ago(b["last_seen"])}</td>'
-                f'<td><a href="/admin/batch/{b["id"]}" class="btn btn-blue btn-sm">→</a></td>'
-                f'</tr>'
-            )
-        sections += (
-            f'<div class="layer-group">'
-            f'<div class="layer-hdr" onclick="toggleLayer(\'{uid}\')">'
-            f'<span><strong>{comp}</strong>'
-            f' <span style="font-size:.72rem;color:#9ca3af;margin-left:6px">{comp_type}</span></span>'
-            f'<span style="display:flex;align-items:center;gap:8px">'
-            f'<span style="font-size:.8rem;color:{color};font-weight:600">'
-            f'{open_cnt} открытых / {cnt} всего</span>'
-            f'<span style="color:#9ca3af;font-size:.8rem" id="{uid}-arrow">▼</span>'
-            f'</span></div>'
-            f'<div id="{uid}" style="display:none;overflow:hidden">'
-            f'<table style="margin-top:0">'
-            f'<thead><tr>'
-            f'<th>#</th><th>Статус</th><th>Паттерн</th>'
-            f'<th style="text-align:right">Кол-во</th><th>Последний раз</th><th></th>'
-            f'</tr></thead><tbody>{rows}</tbody></table></div></div>'
-        )
+    # ── Status dot ────────────────────────────────────────────────────────────
+    status_dot = (
+        '<span style="color:#22c55e">●</span>' if srv_status == "active" else
+        '<span style="color:#9ca3af">●</span>'
+    )
 
-    body = (
+    # ── Header ────────────────────────────────────────────────────────────────
+    header = (
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<a href="/admin/servers" style="color:#6b7280;text-decoration:none;font-size:.85rem">'
         f'← Все серверы</a></div>'
-        f'<h1>{srv_name}</h1>'
+        f'<h1>{status_dot} {srv_name}</h1>'
         f'<p class="sub">'
-        + (info.get("tunnel_url", "") or server_token[:30])
-        + (f' · Статус: {info.get("status","?")}' if info else "")
+        + (tunnel_url or server_token[:30])
+        + (f' · Статус: {srv_status}' if info else "")
         + f'</p>'
-        f'<div class="card">{sections}</div>'
     )
+
+    # ── Server errors section (component NOT IN _AGENT_LAYERS) ────────────────
+    srv_batches = [b for b in batches if (b["component"] or "unknown") not in _AGENT_LAYERS]
+    srv_error_rows = ""
+    for idx, b in enumerate(srv_batches, 1):
+        b = dict(b)
+        srv_error_rows += (
+            f'<tr>'
+            f'<td><span class="row-num">#{idx}</span></td>'
+            f'<td><a href="/admin/batch/{b["id"]}" class="tkt-id"'
+            f' style="text-decoration:none;color:#6b7280">{_tkt(b["id"])}</a></td>'
+            f'<td>{_badge(b["status"])}</td>'
+            f'<td><span class="pattern">'
+            f'{b["pattern"][:100]}{"…" if len(b["pattern"])>100 else ""}'
+            f'</span></td>'
+            f'<td style="text-align:right;font-weight:600">{b["count"]}</td>'
+            f'<td class="ts">{_ago(b["last_seen"])}</td>'
+            f'<td><a href="/admin/batch/{b["id"]}" class="btn btn-blue btn-sm">→</a></td>'
+            f'</tr>'
+        )
+
+    srv_errors_section = (
+        f'<h2>Ошибки сервера</h2>'
+        f'<div class="card" style="padding:0;overflow:hidden">'
+        + (
+            f'<table><thead><tr>'
+            f'<th>#</th><th>TKT</th><th>Статус</th><th>Паттерн</th>'
+            f'<th style="text-align:right">Кол-во</th><th>Последний раз</th><th></th>'
+            f'</tr></thead><tbody>{srv_error_rows}</tbody></table>'
+            if srv_error_rows else
+            '<div class="empty">Нет ошибок сервера</div>'
+        )
+        + f'</div>'
+    )
+
+    # ── Agents section ────────────────────────────────────────────────────────
+    _LAYER_ICONS = {
+        "window":  "🖥",
+        "visual":  "📸",
+        "system":  "⚙",
+        "applogs": "📋",
+        "browser": "🌐",
+        "agent":   "🤖",
+    }
+    _LAYER_ORDER = ["window", "visual", "system", "applogs", "browser", "agent"]
+
+    agents_data = None
+    if tunnel_url and api_key:
+        agents_data = _api_call(tunnel_url, api_key, "/api/v1/agents")
+
+    agents_section = '<h2>Агенты</h2>'
+
+    if agents_data is None:
+        # Fallback: on-prem недоступен — accordion по слоям агента из error_batches
+        agent_batches = [b for b in batches if (b["component"] or "unknown") in _AGENT_LAYERS]
+        agent_comp_stats: dict = defaultdict(lambda: {"cnt": 0, "open_cnt": 0})
+        for b in agent_batches:
+            comp = b["component"] or "unknown"
+            agent_comp_stats[comp]["cnt"] += 1
+            if b["status"] == "open":
+                agent_comp_stats[comp]["open_cnt"] += 1
+
+        if not agent_batches:
+            agents_section += (
+                '<div class="card">'
+                '<div class="empty">Сервер недоступен — агенты не загружены</div>'
+                '</div>'
+            )
+        else:
+            fallback_sections = ""
+            for layer in _LAYER_ORDER:
+                if layer not in by_comp:
+                    continue
+                comp = layer
+                stats = agent_comp_stats[comp]
+                open_cnt = stats["open_cnt"]
+                cnt = stats["cnt"]
+                color = "#ef4444" if open_cnt > 0 else "#22c55e"
+                uid = f"comp-{comp}"
+                icon = _LAYER_ICONS.get(comp, "")
+                rows = ""
+                for b in by_comp[comp]:
+                    rows += (
+                        f'<tr>'
+                        f'<td><span class="row-num" style="font-size:.7rem">#{b["id"]}</span>'
+                        f'<span class="tkt-id">{_tkt(b["id"])}</span></td>'
+                        f'<td>{_badge(b["status"])}</td>'
+                        f'<td><span class="pattern">'
+                        f'{b["pattern"][:100]}{"…" if len(b["pattern"])>100 else ""}'
+                        f'</span></td>'
+                        f'<td style="text-align:right;font-weight:600">{b["count"]}</td>'
+                        f'<td class="ts">{_ago(b["last_seen"])}</td>'
+                        f'<td><a href="/admin/batch/{b["id"]}" class="btn btn-blue btn-sm">→</a></td>'
+                        f'</tr>'
+                    )
+                fallback_sections += (
+                    f'<div class="layer-group">'
+                    f'<div class="layer-hdr" onclick="toggleLayer(\'{uid}\')">'
+                    f'<span><strong>{icon} {comp}</strong>'
+                    f' <span style="font-size:.72rem;color:#9ca3af;margin-left:6px">Агент</span></span>'
+                    f'<span style="display:flex;align-items:center;gap:8px">'
+                    f'<span style="font-size:.8rem;color:{color};font-weight:600">'
+                    f'{open_cnt} открытых / {cnt} всего</span>'
+                    f'<span style="color:#9ca3af;font-size:.8rem" id="{uid}-arrow">▼</span>'
+                    f'</span></div>'
+                    f'<div id="{uid}" style="display:none;overflow:hidden">'
+                    f'<table style="margin-top:0"><thead><tr>'
+                    f'<th>#</th><th>Статус</th><th>Паттерн</th>'
+                    f'<th style="text-align:right">Кол-во</th><th>Последний раз</th><th></th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div></div>'
+                )
+            agents_section += (
+                '<p style="font-size:.8rem;color:#9ca3af;margin-bottom:8px">'
+                'Сервер недоступен — агенты не загружены. Ошибки из error_batches:</p>'
+                f'<div class="card">{fallback_sections}</div>'
+            )
+    else:
+        agents = agents_data.get("agents", [])
+        if not agents:
+            agents_section += (
+                '<div class="card"><div class="empty">Нет зарегистрированных агентов</div></div>'
+            )
+        else:
+            agent_cards = ""
+            for ag in agents:
+                mid = ag.get("machine_id", "")
+                hostname = ag.get("hostname") or mid[:12] + "…"
+                username = ag.get("username", "")
+                ag_status = ag.get("status", "unknown")
+                lag_sec = ag.get("lag_sec")
+                drift_ms = ag.get("drift_ms")
+                version = ag.get("agent_version", "—")
+                last_seen_ts = ag.get("last_seen_ts")
+                layer_counts = ag.get("layer_counts") or {}
+
+                status_dot_ag = (
+                    '<span style="color:#22c55e">●</span>' if ag_status == "online" else
+                    '<span style="color:#9ca3af">●</span>'
+                )
+                lag_str = f"{lag_sec}с назад" if lag_sec is not None else _ago(last_seen_ts)
+                drift_str = (
+                    f'<span style="color:{"#f59e0b" if abs(drift_ms) > 500 else "#6b7280"}">'
+                    f'{drift_ms:+d}мс</span>'
+                    if drift_ms is not None else "—"
+                )
+
+                # Layer rows
+                layer_html = ""
+                for layer in _LAYER_ORDER:
+                    lc = layer_counts.get(layer, {})
+                    ev_1h  = lc.get("events_1h", 0) or 0
+                    ev_24h = lc.get("events_24h", 0) or 0
+                    err_1h = lc.get("errors_1h", 0) or 0
+                    icon = _LAYER_ICONS.get(layer, "")
+                    inline_id = f"layer-{mid[:8]}-{layer}"
+
+                    # Inline errors table (from error_batches)
+                    layer_err_batches = by_comp.get(layer, [])
+                    inline_table = ""
+                    if layer_err_batches:
+                        err_rows = ""
+                        for idx2, b2 in enumerate(layer_err_batches, 1):
+                            err_rows += (
+                                f'<tr>'
+                                f'<td><span class="row-num">#{idx2}</span></td>'
+                                f'<td><a href="/admin/batch/{b2["id"]}" class="tkt-id"'
+                                f' style="text-decoration:none;color:#6b7280">{_tkt(b2["id"])}</a></td>'
+                                f'<td>{_badge(b2["status"])}</td>'
+                                f'<td><span class="pattern">'
+                                f'{b2["pattern"][:80]}{"…" if len(b2["pattern"])>80 else ""}'
+                                f'</span></td>'
+                                f'<td style="text-align:right;font-weight:600">{b2["count"]}</td>'
+                                f'<td class="ts">{_ago(b2["last_seen"])}</td>'
+                                f'</tr>'
+                            )
+                        inline_table = (
+                            f'<div id="{inline_id}" style="display:none;margin-top:4px;'
+                            f'border:1px solid #fde68a;border-radius:5px;overflow:hidden">'
+                            f'<table style="margin:0"><thead><tr>'
+                            f'<th>#</th><th>TKT</th><th>Статус</th><th>Паттерн</th>'
+                            f'<th style="text-align:right">Кол-во</th><th>Последний раз</th>'
+                            f'</tr></thead><tbody>{err_rows}</tbody></table></div>'
+                        )
+
+                    err_btn = ""
+                    if err_1h > 0:
+                        err_btn = (
+                            f' <button onclick="toggleLayer(\'{inline_id}\')" '
+                            f'class="btn btn-amber btn-sm" style="padding:1px 7px;font-size:.7rem">'
+                            f'⚠ {err_1h} ошибок</button>'
+                        )
+
+                    ev_color_1h = "#22c55e" if ev_1h > 0 else "#9ca3af"
+                    layer_html += (
+                        f'<div style="display:inline-flex;flex-direction:column;'
+                        f'align-items:center;margin-right:10px;margin-bottom:4px">'
+                        f'<span style="font-size:.72rem;color:#6b7280">{icon} {layer}</span>'
+                        f'<span style="font-size:.78rem;font-weight:600;color:{ev_color_1h}">'
+                        f'{ev_1h}<span style="font-weight:400;color:#9ca3af">/</span>{ev_24h}'
+                        f'</span>'
+                        + err_btn
+                        + inline_table
+                        + f'</div>'
+                    )
+
+                agent_cards += (
+                    f'<div class="card" style="padding:12px;margin-bottom:8px">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                    f'flex-wrap:wrap;gap:6px">'
+                    f'<div>'
+                    f'<span style="font-weight:600;font-size:.9rem">{status_dot_ag} {hostname}</span>'
+                    + (f'<span style="color:#9ca3af;font-size:.78rem;margin-left:8px">{username}</span>'
+                       if username else "")
+                    + f'</div>'
+                    f'<div style="display:flex;gap:16px;font-size:.78rem;color:#6b7280;flex-wrap:wrap">'
+                    f'<span>v{version}</span>'
+                    f'<span>{lag_str}</span>'
+                    f'<span>drift: {drift_str}</span>'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="margin-top:8px;display:flex;flex-wrap:wrap">{layer_html}</div>'
+                    f'</div>'
+                )
+            agents_section += agent_cards
+
+    body = header + srv_errors_section + agents_section
 
     layer_js = """
 <script>
@@ -1373,7 +1587,6 @@ function toggleLayer(id) {
   el.style.display = open ? 'none' : 'block';
   if (arrow) arrow.textContent = open ? '▼' : '▲';
 }
-// Open first section by default
 document.addEventListener('DOMContentLoaded', () => {
   const first = document.querySelector('.layer-group .layer-hdr');
   if (first) first.click();
