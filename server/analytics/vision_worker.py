@@ -112,7 +112,7 @@ async def _load_batch(conn: asyncpg.Connection, batch_size: int) -> list[_EventR
         """,
         batch_size,
     )
-    return [_EventRow(**dict(r)) for r in rows]
+    return [_EventRow(**{**dict(r), "event_id": str(r["event_id"]), "session_id": str(r["session_id"])}) for r in rows]
 
 
 async def _dhash_filter(
@@ -216,7 +216,7 @@ async def _materialize_to_events(
             WHERE event_id = ANY($1)
             ORDER BY event_id, confidence DESC NULLS LAST
         ) vr
-        WHERE e.event_id = vr.event_id
+        WHERE e.event_id = vr.event_id::UUID
           AND (e.vision_confidence IS NULL OR vr.confidence > e.vision_confidence)
         """,
         event_ids,
@@ -252,7 +252,7 @@ async def process_vision_batch(
                 to_process.append(event)
 
         if not to_process:
-            return 0
+            return dequeued
 
         # Load images from MinIO (sync in thread)
         # MinIO key: {machine_id}/{date}/{event_id}.webp
@@ -273,7 +273,7 @@ async def process_vision_batch(
             (e, img) for e, img in zip(to_process, images) if img is not None
         ]
         if not valid:
-            return 0
+            return dequeued
 
         # Build messages
         user_content = []
@@ -301,7 +301,7 @@ async def process_vision_batch(
             try:
                 response = await client.messages.create(
                     model=MODEL,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=[
                         {
                             "type": "text",
