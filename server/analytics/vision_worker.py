@@ -107,7 +107,7 @@ async def _load_batch(conn: asyncpg.Connection, batch_size: int) -> list[_EventR
           AND vision_done = FALSE
           AND vision_skipped = FALSE
           AND screenshot_path IS NOT NULL
-        ORDER BY synced_ts
+        ORDER BY synced_ts DESC
         LIMIT $1
         """,
         batch_size,
@@ -228,7 +228,11 @@ async def process_vision_batch(
     minio_client: Minio,
     batch_size: int = 20,
 ) -> int:
-    """Process one batch of screenshots. Returns count of processed events."""
+    """Process one batch of screenshots.
+
+    Returns the number of events dequeued (processed or skipped).
+    Returns 0 only when the vision queue is fully empty.
+    """
     client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     run_id = str(uuid.uuid4())
 
@@ -236,6 +240,7 @@ async def process_vision_batch(
         events = await _load_batch(conn, batch_size)
         if not events:
             return 0
+        dequeued = len(events)
 
         # dHash filter
         to_process: list[_EventRow] = []
@@ -320,7 +325,7 @@ async def process_vision_batch(
 
         if response_text is None:
             log.warning("skipping batch of %d — no API response", len(valid))
-            return 0
+            return dequeued
 
         # Parse response
         try:
@@ -349,7 +354,9 @@ async def process_vision_batch(
         await _materialize_to_events(conn, event_ids)
 
         log.info(
-            "vision batch done: run=%s processed=%d skipped=%d",
-            run_id, len(valid), len(to_process) - len(valid),
+            "vision batch done: run=%s sent_to_claude=%d minio_skipped=%d dhash_skipped=%d",
+            run_id, len(valid),
+            len(to_process) - len(valid),
+            len(events) - len(to_process),
         )
-        return len(valid)
+        return dequeued
