@@ -250,12 +250,15 @@ async def process_vision_batch(
             return 0
 
         # Load images from MinIO (sync in thread)
+        # MinIO key: {machine_id}/{date}/{event_id}.webp
+        # screenshot_path from agent: {date}\{event_id}.webp (Windows, no machine_id prefix)
         images: list[Optional[bytes]] = []
         for event in to_process:
-            data = await asyncio.to_thread(_load_from_minio, minio_client, event.screenshot_path)
+            minio_key = f"{event.machine_id}/{event.screenshot_path.replace(chr(92), '/')}"
+            data = await asyncio.to_thread(_load_from_minio, minio_client, minio_key)
             if data is None:
                 await _mark_skipped(conn, event.event_id)
-                log.warning("screenshot not found in MinIO: %s", event.screenshot_path)
+                log.warning("screenshot not found in MinIO: %s", minio_key)
                 images.append(None)
             else:
                 images.append(data)
