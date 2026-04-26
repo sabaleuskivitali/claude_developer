@@ -8,7 +8,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from auth import require_agent_key, require_api_key
 from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ async def get_latest():
 
 
 @router.get("/updates/{version}/package")
-async def get_package(version: str):
+async def get_package(version: str, _key: str = Depends(require_agent_key)):
     event = _events.get(version)
     if event and not event.is_set():
         try:
@@ -119,7 +120,7 @@ async def get_package(version: str):
 
 
 @router.post("/updates/notify")
-async def notify_update(request: Request, background_tasks: BackgroundTasks):
+async def notify_update(request: Request, background_tasks: BackgroundTasks, _key: str = Depends(require_api_key)):
     try:
         data = await request.json()
     except Exception:

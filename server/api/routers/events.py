@@ -1,5 +1,6 @@
 import time
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Request, HTTPException, status, Depends
+from auth import require_agent_key
 from models import EventsBatch
 
 router = APIRouter(prefix="/api/v1")
@@ -16,7 +17,7 @@ def _extract_wan_ip(request: Request) -> str | None:
 
 
 @router.post("/events")
-async def post_events(batch: EventsBatch, request: Request):
+async def post_events(batch: EventsBatch, request: Request, _key: str = Depends(require_agent_key)):
     queue     = request.app.state.event_queue
     server_ts = int(time.time() * 1000)
 
