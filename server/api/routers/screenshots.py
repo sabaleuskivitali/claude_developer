@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Request, HTTPException, status
-from fastapi import UploadFile, File
+from fastapi import APIRouter, Request, HTTPException, status, Depends
+from auth import require_agent_key
 import storage
 
 router = APIRouter(prefix="/api/v1")
@@ -11,9 +11,11 @@ async def upload_screenshot(
     date_str: str,
     event_id: str,
     request: Request,
-    file: UploadFile = File(...),
+    _key: str = Depends(require_agent_key),
 ):
-    data = await file.read()
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty body")
     if len(data) > 5 * 1024 * 1024:  # 5 MB max
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
 
