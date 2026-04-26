@@ -119,7 +119,7 @@ jobs:
             set -e
             cd /opt/seamlean/server
             git pull
-            grep -v ^SERVER_VERSION .env > .env.tmp && mv .env.tmp .env
+            sed -i '/^SERVER_VERSION=/d' .env
             echo \"SERVER_VERSION=${VERSION}\" >> .env
             echo \"${GHCR_TOKEN}\" | docker login ghcr.io -u sabaleuskivitali --password-stdin
             docker compose pull
