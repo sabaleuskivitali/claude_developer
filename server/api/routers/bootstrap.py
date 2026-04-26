@@ -4,15 +4,16 @@ Bootstrap API — profile generation, approval, publishing, and agent enrollment
 Public endpoints (no API key): /active, /enroll
 Protected endpoints: all others (require API key).
 """
+import logging
 import os
 import secrets
-from datetime import datetime, timezone, timedelta
-
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+log = logging.getLogger(__name__)
 
 from auth import require_api_key
 import bootstrap.store as store
@@ -54,53 +55,54 @@ async def enroll_agent(request: Request, body: dict):
     if not machine_id or not token:
         raise HTTPException(400, "machine_id and token required")
 
-    row = await request.app.state.db.fetchrow(
-        """
-        SELECT et.profile_id::TEXT, et.expires_at, bp.status
-          FROM enrollment_tokens et
-          JOIN bootstrap_profiles bp ON bp.profile_id = et.profile_id
-         WHERE et.token = $1
-        """,
-        token,
-    )
-    if not row:
-        raise HTTPException(403, "Invalid or expired enrollment token")
-    if row["expires_at"] and row["expires_at"].astimezone(timezone.utc) < datetime.now(timezone.utc):
-        raise HTTPException(403, "Invalid or expired enrollment token")
-    if row["status"] not in ("active", "published"):
-        raise HTTPException(403, "Bootstrap profile not active")
+    async with request.app.state.db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT et.profile_id::TEXT, et.expires_at, bp.status
+              FROM enrollment_tokens et
+              JOIN bootstrap_profiles bp ON bp.profile_id = et.profile_id
+             WHERE et.token = $1
+            """,
+            token,
+        )
+        if not row:
+            raise HTTPException(403, "Invalid or expired enrollment token")
+        if row["expires_at"] and row["expires_at"].astimezone(timezone.utc) < datetime.now(timezone.utc):
+            raise HTTPException(403, "Invalid or expired enrollment token")
+        if row["status"] not in ("active", "published"):
+            raise HTTPException(403, "Bootstrap profile not active")
 
     # Generate a new independent API key for this machine
     api_key = secrets.token_urlsafe(32)
 
-    # Record this (token, machine_id) use — idempotent, allows re-enrollment from same machine
-    await request.app.state.db.execute(
-        "INSERT INTO enrollment_token_uses (token, machine_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        token, machine_id,
-    )
-    # Mark token as ever-used (operational visibility only — no longer gates enrollment)
-    await request.app.state.db.execute(
-        "UPDATE enrollment_tokens SET used = TRUE, used_at = COALESCE(used_at, NOW()), machine_id = COALESCE(machine_id, $1) WHERE token = $2 AND used = FALSE",
-        machine_id, token,
-    )
-    await store.record_agent_enrollment(
-        request.app.state.db, machine_id, row["profile_id"], method
-    )
-    # Store the issued API key alongside the machine's bootstrap state
-    await request.app.state.db.execute(
-        "UPDATE agent_bootstrap_state SET cert_expires = NOW() + INTERVAL '180 days' WHERE machine_id = $1",
-        machine_id,
-    )
-    # Persist API key in a dedicated table (or reuse commands table as a simple kv store)
-    await request.app.state.db.execute(
-        """
-        INSERT INTO agent_api_keys (machine_id, api_key, issued_at, expires_at)
-        VALUES ($1, $2, NOW(), NOW() + INTERVAL '180 days')
-        ON CONFLICT (machine_id) DO UPDATE
-            SET api_key = EXCLUDED.api_key, issued_at = EXCLUDED.issued_at, expires_at = EXCLUDED.expires_at
-        """,
-        machine_id, api_key,
-    )
+    try:
+        async with request.app.state.db.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO enrollment_token_uses (token, machine_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    token, machine_id,
+                )
+                await conn.execute(
+                    "UPDATE enrollment_tokens SET used = TRUE, used_at = COALESCE(used_at, NOW()), machine_id = COALESCE(machine_id, $1) WHERE token = $2 AND used = FALSE",
+                    machine_id, token,
+                )
+                await store.record_agent_enrollment(conn, machine_id, row["profile_id"], method)
+                await conn.execute(
+                    "UPDATE agent_bootstrap_state SET cert_expires = NOW() + INTERVAL '180 days' WHERE machine_id = $1",
+                    machine_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO agent_api_keys (machine_id, api_key, issued_at, expires_at)
+                    VALUES ($1, $2, NOW(), NOW() + INTERVAL '180 days')
+                    ON CONFLICT (machine_id) DO UPDATE
+                        SET api_key = EXCLUDED.api_key, issued_at = EXCLUDED.issued_at, expires_at = EXCLUDED.expires_at
+                    """,
+                    machine_id, api_key,
+                )
+    except Exception as e:
+        log.error("enroll_agent: DB error for machine=%s: %s", machine_id, e)
+        raise HTTPException(500, "Enrollment failed: internal error")
 
     return {"enrolled": True, "machine_id": machine_id, "api_key": api_key}
 

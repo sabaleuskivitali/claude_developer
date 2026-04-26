@@ -2,11 +2,12 @@ import hashlib
 import logging
 import time
 import uuid
-from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
 import asyncpg
+
+from utils import mode_or_default
 
 log = logging.getLogger(__name__)
 
@@ -64,11 +65,6 @@ def _score_candidate(
     return base + proximity + freq + cross
 
 
-def _mode_or_default(values: list[str], default: str) -> str:
-    if not values:
-        return default
-    return Counter(values).most_common(1)[0][0]
-
 
 async def _build_task_session(
     conn: asyncpg.Connection,
@@ -85,7 +81,7 @@ async def _build_task_session(
 
     # Prefer most common task_label in the group
     labels = [e.vision_task_label for e in group if e.vision_task_label]
-    task_label = _mode_or_default(labels, "unknown")
+    task_label = mode_or_default(labels, "unknown")
 
     # avg_cognitive_demand from vision_results for these events
     event_ids = [e.event_id for e in group]
@@ -99,7 +95,7 @@ async def _build_task_session(
         """,
         event_ids,
     )
-    avg_cognitive = _mode_or_default(
+    avg_cognitive = mode_or_default(
         [r["cognitive_demand"] for r in cog_rows], "MEDIUM"
     )
 

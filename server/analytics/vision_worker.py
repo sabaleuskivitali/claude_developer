@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import json
 import logging
 import os
 import uuid
@@ -11,6 +10,8 @@ import anthropic
 import asyncpg
 from minio import Minio
 from minio.error import S3Error
+
+from utils import parse_json_response
 
 log = logging.getLogger(__name__)
 
@@ -150,13 +151,7 @@ def _load_from_minio(minio_client: Minio, path: str) -> Optional[bytes]:
 
 
 def _parse_response(text: str, expected_count: int) -> list[dict]:
-    text = text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    parsed = json.loads(text)
+    parsed = parse_json_response(text)
     if not isinstance(parsed, list):
         raise ValueError("Expected JSON array")
     return parsed
