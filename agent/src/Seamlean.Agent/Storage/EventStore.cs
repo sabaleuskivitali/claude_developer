@@ -82,20 +82,23 @@ public sealed class EventStore : IDisposable
                 document_name    TEXT,
                 sent             INTEGER NOT NULL DEFAULT 0,
                 sent_at          INTEGER,
-                screenshot_sent  INTEGER NOT NULL DEFAULT 0,
                 payload          TEXT    NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_unsent  ON events (sent, timestamp_utc);
             CREATE INDEX IF NOT EXISTS idx_session ON events (session_id, sequence_idx);
             CREATE INDEX IF NOT EXISTS idx_case    ON events (case_id) WHERE case_id IS NOT NULL;
+            """);
+
+        // Migrations for existing databases
+        try { _conn.Execute("ALTER TABLE events ADD COLUMN screenshot_sent INTEGER NOT NULL DEFAULT 0"); }
+        catch { /* column already exists */ }
+
+        // Create index after column is guaranteed to exist
+        _conn.Execute("""
             CREATE INDEX IF NOT EXISTS idx_screenshots_unsent
                 ON events (screenshot_sent, layer) WHERE layer = 'visual';
             """);
-
-        // Migration for existing databases that don't have screenshot_sent yet
-        try { _conn.Execute("ALTER TABLE events ADD COLUMN screenshot_sent INTEGER NOT NULL DEFAULT 0"); }
-        catch { /* column already exists */ }
 
         _conn.Execute("""
             CREATE TABLE IF NOT EXISTS meetings (
