@@ -12,17 +12,15 @@ for arg in "${@:2}"; do
   fi
 done
 
-declare -A WORKTREES=(
-  ["agent"]="$HOME/Applications/seamlean-agent"
-  ["server"]="$HOME/Applications/seamlean-server"
-  ["cloud"]="$HOME/Applications/seamlean-cloud"
-)
-WORKTREE="${WORKTREES[$COMPONENT]}"
-
-if [ -z "$WORKTREE" ]; then
-  echo "❌ Неизвестный компонент: $COMPONENT (agent | server | cloud)"
-  exit 1
-fi
+case "$COMPONENT" in
+  agent)  WORKTREE="$HOME/Applications/seamlean-agent"  ;;
+  server) WORKTREE="$HOME/Applications/seamlean-server" ;;
+  cloud)  WORKTREE="$HOME/Applications/seamlean-cloud"  ;;
+  *)
+    echo "❌ Неизвестный компонент: $COMPONENT (agent | server | cloud)"
+    exit 1
+    ;;
+esac
 
 BRANCH="work/$COMPONENT"
 DEV_DIR="$HOME/Applications/Claude/Dev"
